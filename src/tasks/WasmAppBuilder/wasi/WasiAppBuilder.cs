@@ -3,6 +3,7 @@
 
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text.Json.Nodes;
 using Microsoft.Build.Framework;
 
@@ -11,19 +12,32 @@ namespace Microsoft.WebAssembly.Build.Tasks;
 public class WasiAppBuilder : WasmAppBuilderBaseTask
 {
     public bool IsSingleFileBundle { get; set; }
+    public bool OutputSymbolsToAppBundle { get; set; }
 
     protected override bool ValidateArguments()
     {
         if (!base.ValidateArguments())
             return false;
 
-        if (!InvariantGlobalization && (IcuDataFileNames == null || IcuDataFileNames.Length == 0))
+        if (!InvariantGlobalization && !IsSingleFileBundle && (IcuDataFileNames == null || IcuDataFileNames.Length == 0))
             throw new LogAsErrorException($"{nameof(IcuDataFileNames)} property shouldn't be empty when {nameof(InvariantGlobalization)}=false");
 
         if (Assemblies.Length == 0 && !IsSingleFileBundle)
+            throw new LogAsErrorException("Cannot build Wasm app without any assemblies");
+
+        if (IsSingleFileBundle)
         {
-            Log.LogError("Cannot build Wasm app without any assemblies");
-            return false;
+            if (ExtraFilesToDeploy.Length > 0)
+            {
+                throw new LogAsErrorException($"$({nameof(ExtraFilesToDeploy)}) is not supported for single file bundles. " +
+                                              $"Value: {string.Join(",", ExtraFilesToDeploy.Select(e => e.GetMetadata("FullPath")))}");
+            }
+
+            if (FilesToIncludeInFileSystem.Length > 0)
+            {
+                throw new LogAsErrorException($"$({nameof(FilesToIncludeInFileSystem)}) is not supported for single file bundles. " +
+                                              $"Value: {string.Join(",", FilesToIncludeInFileSystem.Select(e => e.ItemSpec))}");
+            }
         }
 
         return true;
@@ -53,7 +67,7 @@ public class WasiAppBuilder : WasmAppBuilderBaseTask
             {
                 FileCopyChecked(assembly, Path.Combine(asmRootPath, Path.GetFileName(assembly)), "Assemblies");
 
-                if (DebugLevel != 0)
+                if (OutputSymbolsToAppBundle)
                 {
                     string pdb = Path.ChangeExtension(assembly, ".pdb");
                     if (File.Exists(pdb))

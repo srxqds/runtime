@@ -4,6 +4,7 @@
 using System.Collections;
 using System.Collections.Generic;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Configuration.Test;
 
 namespace Microsoft.Extensions
 #if BUILDING_SOURCE_GENERATOR_TESTS
@@ -11,14 +12,23 @@ namespace Microsoft.Extensions
 #endif
     .Configuration.Binder.Tests
 {
-    public static class TestHelpers
+    internal static class TestHelpers
     {
-        public static bool NotSourceGenMode
+        public const bool NotSourceGenMode
 #if BUILDING_SOURCE_GENERATOR_TESTS
             = false;
 #else
             = true;
-#endif            
+#endif
+
+        public static IConfiguration GetConfigurationFromJsonString(string json)
+        {
+            var builder = new ConfigurationBuilder();
+            var configuration = builder
+                .AddJsonStream(TestStreamHelpers.StringToStream(json))
+                .Build();
+            return configuration;
+        }
     }
 
     #region // Shared test classes
@@ -99,7 +109,7 @@ namespace Microsoft.Extensions
 
         public ISet<UnsupportedTypeInHashSet> UninstantiatedHashSetWithUnsupportedKey { get; set; }
 
-#if NETCOREAPP
+#if NET
         public IReadOnlySet<string> InstantiatedIReadOnlySet { get; set; } = new HashSet<string>();
         public IReadOnlySet<string> InstantiatedIReadOnlySetWithSomeValues { get; set; } =
             new HashSet<string>(new[] { "existing1", "existing2" });
@@ -149,6 +159,18 @@ namespace Microsoft.Extensions
 
         public int Count => _items.Count;
         public bool IsReadOnly => false;
+    }
+
+    public interface IGeolocation
+    {
+        public double Latitude { get; set; }
+        public double Longitude { get; set; }
+    }
+
+    public sealed record GeolocationRecord : IGeolocation
+    {
+        public double Latitude { get; set; }
+        public double Longitude { get; set; }
     }
     #endregion
 }

@@ -110,12 +110,12 @@ int Compiler::optCopyProp_LclVarScore(const LclVarDsc* lclVarDsc, const LclVarDs
 {
     int score = 0;
 
-    if (lclVarDsc->lvVolatileHint)
+    if (lclVarDsc->lvHasExceptionalUsesHint)
     {
         score += 4;
     }
 
-    if (copyVarDsc->lvVolatileHint)
+    if (copyVarDsc->lvHasExceptionalUsesHint)
     {
         score -= 4;
     }
@@ -158,7 +158,8 @@ int Compiler::optCopyProp_LclVarScore(const LclVarDsc* lclVarDsc, const LclVarDs
 bool Compiler::optCopyProp(
     BasicBlock* block, Statement* stmt, GenTreeLclVarCommon* tree, unsigned lclNum, LclNumToLiveDefsMap* curSsaName)
 {
-    assert(((tree->gtFlags & GTF_VAR_DEF) == 0) && (tree->GetLclNum() == lclNum) && tree->gtVNPair.BothDefined());
+    assert((tree->gtFlags & GTF_VAR_DEF) == 0);
+    assert(tree->GetLclNum() == lclNum);
 
     bool       madeChanges = false;
     LclVarDsc* varDsc      = lvaGetDesc(lclNum);
@@ -192,11 +193,8 @@ bool Compiler::optCopyProp(
             continue;
         }
 
-        // Do not copy propagate if the old and new lclVar have different 'doNotEnregister' settings.
-        // This is primarily to avoid copy propagating to IND(ADDR(LCL_VAR)) where the replacement lclVar
-        // is not marked 'lvDoNotEnregister'.
-        // However, in addition, it may not be profitable to propagate a 'doNotEnregister' lclVar to an
-        // existing use of an enregisterable lclVar.
+        // It may not be profitable to propagate a 'doNotEnregister' lclVar to an existing use of an
+        // enregisterable lclVar.
         LclVarDsc* const newLclVarDsc = lvaGetDesc(newLclNum);
         if (varDsc->lvDoNotEnregister != newLclVarDsc->lvDoNotEnregister)
         {
@@ -232,18 +230,16 @@ bool Compiler::optCopyProp(
             continue;
         }
 
-        if (tree->OperIs(GT_LCL_VAR))
+        var_types newLclType = newLclVarDsc->TypeGet();
+        if (!newLclVarDsc->lvNormalizeOnLoad())
         {
-            var_types newLclType = newLclVarDsc->TypeGet();
-            if (!newLclVarDsc->lvNormalizeOnLoad())
-            {
-                newLclType = genActualType(newLclType);
-            }
+            newLclType = genActualType(newLclType);
+        }
 
-            if (newLclType != tree->TypeGet())
-            {
-                continue;
-            }
+        var_types oldLclType = tree->OperIs(GT_LCL_VAR) ? tree->TypeGet() : varDsc->TypeGet();
+        if (newLclType != oldLclType)
+        {
+            continue;
         }
 
 #ifdef DEBUG
@@ -285,16 +281,16 @@ bool Compiler::optCopyProp(
 // optCopyPropPushDef: Push the new live SSA def on the stack for "lclNode".
 //
 // Arguments:
-//    defNode    - The definition node for this def (GT_ASG/GT_CALL) (will be "nullptr" for "use" defs)
-//    lclNode    - The local tree representing "the def" (that can actually be a use)
+//    defNode    - The definition node for this def (store/GT_CALL) (will be "nullptr" for "use" defs)
+//    lclNode    - The local tree representing "the def"
 //    curSsaName - The map of local numbers to stacks of their defs
 //
 void Compiler::optCopyPropPushDef(GenTree* defNode, GenTreeLclVarCommon* lclNode, LclNumToLiveDefsMap* curSsaName)
 {
     unsigned lclNum = lclNode->GetLclNum();
 
-    // Shadowed parameters are special: they will (at most) have one use, that is one on the RHS of an
-    // assignment to their shadow, and we must not substitute them anywhere. So we'll not push any defs.
+    // Shadowed parameters are special: they will (at most) have one use, as values in a store
+    // to their shadow, and we must not substitute them anywhere. So we'll not push any defs.
     if ((gsShadowVarInfo != nullptr) && lvaGetDesc(lclNum)->lvIsParam &&
         (gsShadowVarInfo[lclNum].shadowCopy != BAD_VAR_NUM))
     {
@@ -392,8 +388,7 @@ bool Compiler::optBlockCopyProp(BasicBlock* block, LclNumToLiveDefsMap* curSsaNa
             {
                 optCopyPropPushDef(tree, lclDefNode, curSsaName);
             }
-            else if (tree->OperIs(GT_LCL_VAR, GT_LCL_FLD) && ((tree->gtFlags & GTF_VAR_DEF) == 0) &&
-                     tree->AsLclVarCommon()->HasSsaName())
+            else if (tree->OperIs(GT_LCL_VAR, GT_LCL_FLD) && tree->AsLclVarCommon()->HasSsaName())
             {
                 unsigned lclNum = tree->AsLclVarCommon()->GetLclNum();
 
@@ -465,7 +460,7 @@ PhaseStatus Compiler::optVnCopyProp()
 
     public:
         CopyPropDomTreeVisitor(Compiler* compiler)
-            : DomTreeVisitor(compiler, compiler->fgSsaDomTree)
+            : DomTreeVisitor(compiler)
             , m_curSsaName(compiler->getAllocator(CMK_CopyProp))
             , m_madeChanges(false)
         {
@@ -490,7 +485,7 @@ PhaseStatus Compiler::optVnCopyProp()
 
         void PropagateCopies()
         {
-            WalkTree();
+            WalkTree(m_compiler->m_domTree);
 
 #ifdef DEBUG
             // Verify the definitions remaining are only those we pushed for parameters.

@@ -14,12 +14,13 @@ namespace System.Text.Json.Serialization.Metadata
         /// </summary>
         private static JsonTypeInfo<T> CreateCore<T>(JsonConverter converter, JsonSerializerOptions options)
         {
-            JsonTypeInfo<T> typeInfo = new JsonTypeInfo<T>(converter, options);
+            var typeInfo = new JsonTypeInfo<T>(converter, options);
             typeInfo.PopulatePolymorphismMetadata();
             typeInfo.MapInterfaceTypesToCallbacks();
 
             // Plug in any converter configuration -- should be run last.
             converter.ConfigureJsonTypeInfo(typeInfo, options);
+            typeInfo.IsCustomized = false;
             return typeInfo;
         }
 
@@ -29,9 +30,11 @@ namespace System.Text.Json.Serialization.Metadata
         private static JsonTypeInfo<T> CreateCore<T>(JsonSerializerOptions options, JsonObjectInfoValues<T> objectInfo)
         {
             JsonConverter<T> converter = GetConverter(objectInfo);
-            JsonTypeInfo<T> typeInfo = new JsonTypeInfo<T>(converter, options);
+            var typeInfo = new JsonTypeInfo<T>(converter, options);
             if (objectInfo.ObjectWithParameterizedConstructorCreator != null)
             {
+                // NB parameter metadata must be populated *before* property metadata
+                // so that properties can be linked to their associated parameters.
                 typeInfo.CreateObjectWithArgs = objectInfo.ObjectWithParameterizedConstructorCreator;
                 PopulateParameterInfoValues(typeInfo, objectInfo.ConstructorParameterMetadataInitializer);
             }
@@ -41,7 +44,15 @@ namespace System.Text.Json.Serialization.Metadata
                 typeInfo.CreateObjectForExtensionDataProperty = ((JsonTypeInfo)typeInfo).CreateObject;
             }
 
-            PopulateProperties(typeInfo, objectInfo.PropertyMetadataInitializer);
+            if (objectInfo.PropertyMetadataInitializer != null)
+            {
+                typeInfo.SourceGenDelayedPropertyInitializer = objectInfo.PropertyMetadataInitializer;
+            }
+            else
+            {
+                typeInfo.PropertyMetadataSerializationNotSupported = true;
+            }
+
             typeInfo.SerializeHandler = objectInfo.SerializeHandler;
             typeInfo.NumberHandling = objectInfo.NumberHandling;
             typeInfo.PopulatePolymorphismMetadata();
@@ -49,6 +60,7 @@ namespace System.Text.Json.Serialization.Metadata
 
             // Plug in any converter configuration -- should be run last.
             converter.ConfigureJsonTypeInfo(typeInfo, options);
+            typeInfo.IsCustomized = false;
             return typeInfo;
         }
 
@@ -62,15 +74,16 @@ namespace System.Text.Json.Serialization.Metadata
             object? createObjectWithArgs = null,
             object? addFunc = null)
         {
+            if (collectionInfo is null)
+            {
+                ThrowHelper.ThrowArgumentNullException(nameof(collectionInfo));
+            }
+
             converter = collectionInfo.SerializeHandler != null
                 ? new JsonMetadataServicesConverter<T>(converter)
                 : converter;
 
             JsonTypeInfo<T> typeInfo = new JsonTypeInfo<T>(converter, options);
-            if (collectionInfo is null)
-            {
-                ThrowHelper.ThrowArgumentNullException(nameof(collectionInfo));
-            }
 
             typeInfo.KeyTypeInfo = collectionInfo.KeyInfo;
             typeInfo.ElementTypeInfo = collectionInfo.ElementInfo;
@@ -85,6 +98,7 @@ namespace System.Text.Json.Serialization.Metadata
 
             // Plug in any converter configuration -- should be run last.
             converter.ConfigureJsonTypeInfo(typeInfo, options);
+            typeInfo.IsCustomized = false;
             return typeInfo;
         }
 
@@ -106,9 +120,9 @@ namespace System.Text.Json.Serialization.Metadata
             Debug.Assert(typeInfo.Kind is JsonTypeInfoKind.Object);
             Debug.Assert(!typeInfo.IsReadOnly);
 
-            if (paramFactory?.Invoke() is JsonParameterInfoValues[] array)
+            if (paramFactory?.Invoke() is JsonParameterInfoValues[] parameterInfoValues)
             {
-                typeInfo.ParameterInfoValues = array;
+                typeInfo.PopulateParameterInfoValues(parameterInfoValues);
             }
             else
             {
@@ -116,32 +130,19 @@ namespace System.Text.Json.Serialization.Metadata
             }
         }
 
-        private static void PopulateProperties(JsonTypeInfo typeInfo, Func<JsonSerializerContext, JsonPropertyInfo[]?>? propInitFunc)
+        internal static void PopulateProperties(JsonTypeInfo typeInfo, JsonTypeInfo.JsonPropertyInfoList propertyList, Func<JsonSerializerContext, JsonPropertyInfo[]> propInitFunc)
         {
             Debug.Assert(typeInfo.Kind is JsonTypeInfoKind.Object);
-            Debug.Assert(!typeInfo.IsReadOnly);
+            Debug.Assert(!typeInfo.IsConfigured);
+            Debug.Assert(typeInfo.Type != JsonTypeInfo.ObjectType);
+            Debug.Assert(typeInfo.Converter.ElementType is null);
 
-            JsonSerializerContext? context = (typeInfo.OriginatingResolver ?? typeInfo.Options.TypeInfoResolver) as JsonSerializerContext;
-            if (propInitFunc?.Invoke(context!) is not JsonPropertyInfo[] properties)
-            {
-                if (typeInfo.Type == JsonTypeInfo.ObjectType)
-                {
-                    return;
-                }
+            JsonSerializerContext? context = typeInfo.Options.TypeInfoResolver as JsonSerializerContext;
+            JsonPropertyInfo[] properties = propInitFunc(context!);
 
-                if (typeInfo.Converter.ElementType != null)
-                {
-                    // Nullable<> or F# optional converter strategy is set to element strategy
-                    return;
-                }
-
-                typeInfo.PropertyMetadataSerializationNotSupported = true;
-                return;
-            }
-
-            // TODO update the source generator so that all property
-            // hierarchy resolution is happening at compile time.
-            JsonTypeInfo.PropertyHierarchyResolutionState state = new();
+            // Regardless of the source generator we need to re-run the naming conflict resolution algorithm
+            // at run time since it is possible that the naming policy or other configs can be different then.
+            JsonTypeInfo.PropertyHierarchyResolutionState state = new(typeInfo.Options);
 
             foreach (JsonPropertyInfo jsonPropertyInfo in properties)
             {
@@ -150,7 +151,7 @@ namespace System.Text.Json.Serialization.Metadata
                     if (jsonPropertyInfo.SrcGen_HasJsonInclude)
                     {
                         Debug.Assert(jsonPropertyInfo.MemberName != null, "MemberName is not set by source gen");
-                        ThrowHelper.ThrowInvalidOperationException_JsonIncludeOnNonPublicInvalid(jsonPropertyInfo.MemberName, jsonPropertyInfo.DeclaringType);
+                        ThrowHelper.ThrowInvalidOperationException_JsonIncludeOnInaccessibleProperty(jsonPropertyInfo.MemberName, jsonPropertyInfo.DeclaringType);
                     }
 
                     continue;
@@ -161,10 +162,13 @@ namespace System.Text.Json.Serialization.Metadata
                     continue;
                 }
 
-                typeInfo.AddProperty(jsonPropertyInfo, ref state);
+                propertyList.AddPropertyWithConflictResolution(jsonPropertyInfo, ref state);
             }
 
-            // NB we don't need to sort source gen properties here since they were already sorted at compile time.
+            if (state.IsPropertyOrderSpecified)
+            {
+                propertyList.SortProperties();
+            }
         }
 
         private static JsonPropertyInfo<T> CreatePropertyInfoCore<T>(JsonPropertyInfoValues<T> propertyInfoValues, JsonSerializerOptions options)
@@ -191,6 +195,7 @@ namespace System.Text.Json.Serialization.Metadata
             propertyInfo.IgnoreCondition = propertyInfoValues.IgnoreCondition;
             propertyInfo.JsonTypeInfo = propertyInfoValues.PropertyTypeInfo;
             propertyInfo.NumberHandling = propertyInfoValues.NumberHandling;
+            propertyInfo.IsSourceGenerated = true;
 
             return propertyInfo;
         }

@@ -12,9 +12,8 @@ enum class SimdAsHWIntrinsicClassId
     Vector2,
     Vector3,
     Vector4,
-    VectorT128,
-    VectorT256,
-    VectorT512,
+    Vector,
+    VectorT,
 };
 
 enum class SimdAsHWIntrinsicFlag : unsigned int
@@ -77,11 +76,11 @@ struct SimdAsHWIntrinsicInfo
                                    CORINFO_SIG_INFO* sig,
                                    const char*       className,
                                    const char*       methodName,
-                                   const char*       enclosingClassName,
-                                   int               sizeOfVectorT);
-    static SimdAsHWIntrinsicClassId lookupClassId(const char* className,
-                                                  const char* enclosingClassName,
-                                                  int         sizeOfVectorT);
+                                   const char*       enclosingClassName);
+
+    static SimdAsHWIntrinsicClassId lookupClassId(Compiler*   comp,
+                                                  const char* className,
+                                                  const char* enclosingClassName);
 
     // Member lookup
 

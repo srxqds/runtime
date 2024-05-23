@@ -4,6 +4,7 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
+using System.Numerics;
 
 // A class that provides a simple, lightweight implementation of thread-local lazy-initialization, where a value is initialized once per accessing
 // thread; this provides an alternative to using a ThreadStatic static variable and having
@@ -23,7 +24,7 @@ namespace System.Threading
     /// </para>
     /// </remarks>
     [DebuggerTypeProxy(typeof(SystemThreading_ThreadLocalDebugView<>))]
-    [DebuggerDisplay("IsValueCreated={IsValueCreated}, Value={ValueForDebugDisplay}, Count={ValuesCountForDebugDisplay}")]
+    [DebuggerDisplay("IsValueCreated = {IsValueCreated}, Value = {ValueForDebugDisplay}, Count = {ValuesCountForDebugDisplay}")]
     public class ThreadLocal<T> : IDisposable
     {
         // a delegate that returns the created value, if null the created value will be default(T)
@@ -61,7 +62,7 @@ namespace System.Threading
         private bool _trackAllValues;
 
         /// <summary>
-        /// Initializes the <see cref="System.Threading.ThreadLocal{T}"/> instance.
+        /// Initializes the <see cref="ThreadLocal{T}"/> instance.
         /// </summary>
         public ThreadLocal()
         {
@@ -69,7 +70,7 @@ namespace System.Threading
         }
 
         /// <summary>
-        /// Initializes the <see cref="System.Threading.ThreadLocal{T}"/> instance.
+        /// Initializes the <see cref="ThreadLocal{T}"/> instance.
         /// </summary>
         /// <param name="trackAllValues">Whether to track all values set on the instance and expose them through the Values property.</param>
         public ThreadLocal(bool trackAllValues)
@@ -79,15 +80,15 @@ namespace System.Threading
 
 
         /// <summary>
-        /// Initializes the <see cref="System.Threading.ThreadLocal{T}"/> instance with the
+        /// Initializes the <see cref="ThreadLocal{T}"/> instance with the
         /// specified <paramref name="valueFactory"/> function.
         /// </summary>
         /// <param name="valueFactory">
-        /// The <see cref="System.Func{T}"/> invoked to produce a lazily-initialized value when
+        /// The <see cref="Func{T}"/> invoked to produce a lazily-initialized value when
         /// an attempt is made to retrieve <see cref="Value"/> without it having been previously initialized.
         /// </param>
-        /// <exception cref="System.ArgumentNullException">
-        /// <paramref name="valueFactory"/> is a null reference (Nothing in Visual Basic).
+        /// <exception cref="ArgumentNullException">
+        /// <paramref name="valueFactory"/> is a null reference (<see langword="Nothing" /> in Visual Basic).
         /// </exception>
         public ThreadLocal(Func<T> valueFactory)
         {
@@ -97,16 +98,16 @@ namespace System.Threading
         }
 
         /// <summary>
-        /// Initializes the <see cref="System.Threading.ThreadLocal{T}"/> instance with the
+        /// Initializes the <see cref="ThreadLocal{T}"/> instance with the
         /// specified <paramref name="valueFactory"/> function.
         /// </summary>
         /// <param name="valueFactory">
-        /// The <see cref="System.Func{T}"/> invoked to produce a lazily-initialized value when
+        /// The <see cref="Func{T}"/> invoked to produce a lazily-initialized value when
         /// an attempt is made to retrieve <see cref="Value"/> without it having been previously initialized.
         /// </param>
         /// <param name="trackAllValues">Whether to track all values set on the instance and expose them via the Values property.</param>
-        /// <exception cref="System.ArgumentNullException">
-        /// <paramref name="valueFactory"/> is a null reference (Nothing in Visual Basic).
+        /// <exception cref="ArgumentNullException">
+        /// <paramref name="valueFactory"/> is a null reference (<see langword="Nothing" /> in Visual Basic).
         /// </exception>
         public ThreadLocal(Func<T> valueFactory, bool trackAllValues)
         {
@@ -121,7 +122,7 @@ namespace System.Threading
             _trackAllValues = trackAllValues;
 
             // Assign the ID and mark the instance as initialized.
-             _idComplement = ~s_idManager.GetId(trackAllValues);
+            _idComplement = ~s_idManager.GetId(trackAllValues);
 
             // As the last step, mark the instance as fully initialized. (Otherwise, if _initialized=false, we know that an exception
             // occurred in the constructor.)
@@ -129,7 +130,7 @@ namespace System.Threading
         }
 
         /// <summary>
-        /// Releases the resources used by this <see cref="System.Threading.ThreadLocal{T}" /> instance.
+        /// Releases the resources used by this <see cref="ThreadLocal{T}" /> instance.
         /// </summary>
         ~ThreadLocal()
         {
@@ -140,10 +141,10 @@ namespace System.Threading
         #region IDisposable Members
 
         /// <summary>
-        /// Releases the resources used by this <see cref="System.Threading.ThreadLocal{T}" /> instance.
+        /// Releases the resources used by this <see cref="ThreadLocal{T}" /> instance.
         /// </summary>
         /// <remarks>
-        /// Unlike most of the members of <see cref="System.Threading.ThreadLocal{T}"/>, this method is not thread-safe.
+        /// Unlike most of the members of <see cref="ThreadLocal{T}"/>, this method is not thread-safe.
         /// </remarks>
         public void Dispose()
         {
@@ -152,13 +153,13 @@ namespace System.Threading
         }
 
         /// <summary>
-        /// Releases the resources used by this <see cref="System.Threading.ThreadLocal{T}" /> instance.
+        /// Releases the resources used by this <see cref="ThreadLocal{T}" /> instance.
         /// </summary>
         /// <param name="disposing">
         /// A Boolean value that indicates whether this method is being called due to a call to <see cref="Dispose()"/>.
         /// </param>
         /// <remarks>
-        /// Unlike most of the members of <see cref="System.Threading.ThreadLocal{T}"/>, this method is not thread-safe.
+        /// Unlike most of the members of <see cref="ThreadLocal{T}"/>, this method is not thread-safe.
         /// </remarks>
         protected virtual void Dispose(bool disposing)
         {
@@ -206,13 +207,13 @@ namespace System.Threading
 
         /// <summary>Creates and returns a string representation of this instance for the current thread.</summary>
         /// <returns>The result of calling <see cref="object.ToString"/> on the <see cref="Value"/>.</returns>
-        /// <exception cref="System.NullReferenceException">
-        /// The <see cref="Value"/> for the current thread is a null reference (Nothing in Visual Basic).
+        /// <exception cref="NullReferenceException">
+        /// The <see cref="Value"/> for the current thread is a null reference (<see langword="Nothing" /> in Visual Basic).
         /// </exception>
-        /// <exception cref="System.InvalidOperationException">
+        /// <exception cref="InvalidOperationException">
         /// The initialization function referenced <see cref="Value"/> in an improper manner.
         /// </exception>
-        /// <exception cref="System.ObjectDisposedException">
+        /// <exception cref="ObjectDisposedException">
         /// The <see cref="ThreadLocal{T}"/> instance has been disposed.
         /// </exception>
         /// <remarks>
@@ -227,10 +228,10 @@ namespace System.Threading
         /// <summary>
         /// Gets or sets the value of this instance for the current thread.
         /// </summary>
-        /// <exception cref="System.InvalidOperationException">
+        /// <exception cref="InvalidOperationException">
         /// The initialization function referenced <see cref="Value"/> in an improper manner.
         /// </exception>
-        /// <exception cref="System.ObjectDisposedException">
+        /// <exception cref="ObjectDisposedException">
         /// The <see cref="ThreadLocal{T}"/> instance has been disposed.
         /// </exception>
         /// <remarks>
@@ -414,7 +415,7 @@ namespace System.Threading
         /// <summary>
         /// Gets a list for all of the values currently stored by all of the threads that have accessed this instance.
         /// </summary>
-        /// <exception cref="System.ObjectDisposedException">
+        /// <exception cref="ObjectDisposedException">
         /// The <see cref="ThreadLocal{T}"/> instance has been disposed.
         /// </exception>
         public IList<T> Values
@@ -471,7 +472,7 @@ namespace System.Threading
         /// <summary>
         /// Gets whether <see cref="Value"/> is initialized on the current thread.
         /// </summary>
-        /// <exception cref="System.ObjectDisposedException">
+        /// <exception cref="ObjectDisposedException">
         /// The <see cref="ThreadLocal{T}"/> instance has been disposed.
         /// </exception>
         public bool IsValueCreated
@@ -552,40 +553,15 @@ namespace System.Threading
             }
             Debug.Assert(minSize > 0);
 
-            //
-            // Round up the size to the next power of 2
-            //
-            // The algorithm takes three steps:
-            // input -> subtract one -> propagate 1-bits to the right -> add one
-            //
-            // Let's take a look at the 3 steps in both interesting cases: where the input
-            // is (Example 1) and isn't (Example 2) a power of 2.
-            //
-            // Example 1: 100000 -> 011111 -> 011111 -> 100000
-            // Example 2: 011010 -> 011001 -> 011111 -> 100000
-            //
-            int newSize = minSize;
-
-            // Step 1: Decrement
-            newSize--;
-
-            // Step 2: Propagate 1-bits to the right.
-            newSize |= newSize >> 1;
-            newSize |= newSize >> 2;
-            newSize |= newSize >> 4;
-            newSize |= newSize >> 8;
-            newSize |= newSize >> 16;
-
-            // Step 3: Increment
-            newSize++;
+            uint newSize = BitOperations.RoundUpToPowerOf2((uint)minSize);
 
             // Don't set newSize to more than Array.MaxArrayLength
-            if ((uint)newSize > Array.MaxLength)
+            if (newSize > Array.MaxLength)
             {
-                newSize = Array.MaxLength;
+                newSize = (uint)Array.MaxLength;
             }
 
-            return newSize;
+            return (int)newSize;
         }
 
         /// <summary>

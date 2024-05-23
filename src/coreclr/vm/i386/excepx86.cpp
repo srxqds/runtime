@@ -1029,7 +1029,7 @@ CPFH_RealFirstPassHandler(                  // ExceptionContinueSearch, etc.
 
         EEToProfilerExceptionInterfaceWrapper::ExceptionThrown(pThread);
 
-        g_exceptionCount++;
+        InterlockedIncrement((LONG*)&g_exceptionCount);
 
     } // End of case-1-or-3
 
@@ -1571,9 +1571,6 @@ EXCEPTION_HANDLER_IMPL(COMPlusFrameHandler)
 
     _ASSERTE((pContext == NULL) || ((pContext->ContextFlags & CONTEXT_CONTROL) == CONTEXT_CONTROL));
 
-    if (g_fNoExceptions)
-        return ExceptionContinueSearch; // No EH during EE shutdown.
-
     // Check if the exception represents a GCStress Marker. If it does,
     // we shouldnt record its entry in the TLS as such exceptions are
     // continuable and can confuse the VM to treat them as CSE,
@@ -1849,39 +1846,7 @@ PEXCEPTION_REGISTRATION_RECORD GetCurrentSEHRecord()
 {
     WRAPPER_NO_CONTRACT;
 
-    LPVOID fs0 = (LPVOID)__readfsdword(0);
-
-#if 0  // This walk is too expensive considering we hit it every time we a CONTRACT(NOTHROW)
-#ifdef _DEBUG
-    EXCEPTION_REGISTRATION_RECORD *pEHR = (EXCEPTION_REGISTRATION_RECORD *)fs0;
-    LPVOID spVal;
-    __asm {
-        mov spVal, esp
-    }
-
-    // check that all the eh frames are all greater than the current stack value. If not, the
-    // stack has been updated somehow w/o unwinding the SEH chain.
-
-    // LOG((LF_EH, LL_INFO1000000, "ER Chain:\n"));
-    while (pEHR != NULL && pEHR != EXCEPTION_CHAIN_END) {
-        // LOG((LF_EH, LL_INFO1000000, "\tp: prev:p handler:%x\n", pEHR, pEHR->Next, pEHR->Handler));
-        if (pEHR < spVal) {
-            if (gLastResumedExceptionFunc != 0)
-                _ASSERTE(!"Stack is greater than start of SEH chain - possible missing leave in handler. See gLastResumedExceptionHandler & gLastResumedExceptionFunc for info");
-            else
-                _ASSERTE(!"Stack is greater than start of SEH chain (FS:0)");
-        }
-        if (pEHR->Handler == (void *)-1)
-            _ASSERTE(!"Handler value has been corrupted");
-
-            _ASSERTE(pEHR < pEHR->Next);
-
-        pEHR = pEHR->Next;
-    }
-#endif
-#endif // 0
-
-    return (EXCEPTION_REGISTRATION_RECORD*) fs0;
+    return (PEXCEPTION_REGISTRATION_RECORD)__readfsdword(0);
 }
 
 PEXCEPTION_REGISTRATION_RECORD GetFirstCOMPlusSEHRecord(Thread *pThread) {
@@ -1917,29 +1882,23 @@ PEXCEPTION_REGISTRATION_RECORD GetPrevSEHRecord(EXCEPTION_REGISTRATION_RECORD *n
 VOID SetCurrentSEHRecord(EXCEPTION_REGISTRATION_RECORD *pSEH)
 {
     WRAPPER_NO_CONTRACT;
-    *GetThread()->GetExceptionListPtr() = pSEH;
+
+    __writefsdword(0, (DWORD)pSEH);
 }
 
-// Note that this logic is copied below, in PopSEHRecords
-__declspec(naked)
-VOID __cdecl PopSEHRecords(LPVOID pTargetSP)
+VOID PopSEHRecords(LPVOID pTargetSP)
 {
-    // No CONTRACT possible on naked functions
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
 
-    __asm{
-        mov     ecx, [esp+4]        ;; ecx <- pTargetSP
-        mov     eax, fs:[0]         ;; get current SEH record
-  poploop:
-        cmp     eax, ecx
-        jge     done
-        mov     eax, [eax]          ;; get next SEH record
-        jmp     poploop
-  done:
-        mov     fs:[0], eax
-        retn
+    PEXCEPTION_REGISTRATION_RECORD currentContext = GetCurrentSEHRecord();
+    // The last record in the chain is EXCEPTION_CHAIN_END which is defined as maxiumum
+    // pointer value so it cannot satisfy the loop condition.
+    while (currentContext < pTargetSP)
+    {
+        currentContext = currentContext->Next;
     }
+    SetCurrentSEHRecord(currentContext);
 }
 
 //
@@ -2285,30 +2244,25 @@ StackWalkAction COMPlusThrowCallback(       // SWA value
 
     if (!pCf->IsFrameless())
     {
-        // @todo - remove this once SIS is fully enabled.
-        extern bool g_EnableSIS;
-        if (g_EnableSIS)
+        // For debugger, we may want to notify 1st chance exceptions if they're coming out of a stub.
+        // We recognize stubs as Frames with a M2U transition type. The debugger's stackwalker also
+        // recognizes these frames and publishes ICorDebugInternalFrames in the stackwalk. It's
+        // important to use pFrame as the stack address so that the Exception callback matches up
+        // w/ the ICorDebugInternalFrame stack range.
+        if (CORDebuggerAttached())
         {
-            // For debugger, we may want to notify 1st chance exceptions if they're coming out of a stub.
-            // We recognize stubs as Frames with a M2U transition type. The debugger's stackwalker also
-            // recognizes these frames and publishes ICorDebugInternalFrames in the stackwalk. It's
-            // important to use pFrame as the stack address so that the Exception callback matches up
-            // w/ the ICorDebugInternlFrame stack range.
-            if (CORDebuggerAttached())
+            Frame * pFrameStub = pCf->GetFrame();
+            Frame::ETransitionType t = pFrameStub->GetTransitionType();
+            if (t == Frame::TT_M2U)
             {
-                Frame * pFrameStub = pCf->GetFrame();
-                Frame::ETransitionType t = pFrameStub->GetTransitionType();
-                if (t == Frame::TT_M2U)
+                // Use address of the frame as the stack address.
+                currentSP = (SIZE_T) ((void*) pFrameStub);
+                currentIP = 0; // no IP.
+                EEToDebuggerExceptionInterfaceWrapper::FirstChanceManagedException(pThread, (SIZE_T)currentIP, (SIZE_T)currentSP);
+                // Deliver the FirstChanceNotification after the debugger, if not already delivered.
+                if (!pExInfo->DeliveredFirstChanceNotification())
                 {
-                    // Use address of the frame as the stack address.
-                    currentSP = (SIZE_T) ((void*) pFrameStub);
-                    currentIP = 0; // no IP.
-                    EEToDebuggerExceptionInterfaceWrapper::FirstChanceManagedException(pThread, (SIZE_T)currentIP, (SIZE_T)currentSP);
-                    // Deliver the FirstChanceNotification after the debugger, if not already delivered.
-                    if (!pExInfo->DeliveredFirstChanceNotification())
-                    {
-                        ExceptionNotifications::DeliverFirstChanceNotification();
-                    }
+                    ExceptionNotifications::DeliverFirstChanceNotification();
                 }
             }
         }
@@ -2975,8 +2929,7 @@ void ResumeAtJitEH(CrawlFrame* pCf,
         bool unwindSuccess = pCf->GetCodeManager()->UnwindStackFrame(pCf->GetRegisterSet(),
                                                                      pCf->GetCodeInfo(),
                                                                      pCf->GetCodeManagerFlags(),
-                                                                     pCf->GetCodeManState(),
-                                                                     NULL /* StackwalkCacheUnwindInfo* */);
+                                                                     pCf->GetCodeManState());
         _ASSERTE(unwindSuccess);
 
         if (((TADDR)pThread->m_pFrame < pCf->GetRegisterSet()->SP))
@@ -3438,10 +3391,10 @@ AdjustContextForVirtualStub(
 
     PCODE f_IP = GetIP(pContext);
 
-    VirtualCallStubManager::StubKind sk;
+    StubCodeBlockKind sk;
     VirtualCallStubManager *pMgr = VirtualCallStubManager::FindStubManager(f_IP, &sk);
 
-    if (sk == VirtualCallStubManager::SK_DISPATCH)
+    if (sk == STUB_CODE_BLOCK_VSD_DISPATCH_STUB)
     {
         if (*PTR_WORD(f_IP) != X86_INSTR_CMP_IND_ECX_IMM32)
         {
@@ -3450,7 +3403,7 @@ AdjustContextForVirtualStub(
         }
     }
     else
-    if (sk == VirtualCallStubManager::SK_RESOLVE)
+    if (sk == STUB_CODE_BLOCK_VSD_RESOLVE_STUB)
     {
         if (*PTR_WORD(f_IP) != X86_INSTR_MOV_EAX_ECX_IND)
         {
@@ -3486,7 +3439,7 @@ AdjustContextForVirtualStub(
     // set the ESP to what it would be after the call (remove pushed arguments)
 
     size_t stackArgumentsSize;
-    if (sk == VirtualCallStubManager::SK_DISPATCH)
+    if (sk == STUB_CODE_BLOCK_VSD_DISPATCH_STUB)
     {
         ENABLE_FORBID_GC_LOADER_USE_IN_THIS_SCOPE();
 

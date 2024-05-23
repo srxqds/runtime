@@ -1,11 +1,9 @@
-v1.2.12
-(21767c654d31d2dccdde4330529775c6c5fd5389)
+v1.3.1
+(51b7f2abdade71cd9bb0e7a373ef2610ec6f9daf)
 
-https://github.com/madler/zlib/releases/tag/v1.2.12
+https://github.com/madler/zlib/releases/tag/v1.3.1
 
-We have also cherry-picked into our local copy:
-https://github.com/madler/zlib/commit/ec3df00224d4b396e2ac6586ab5d25f673caa4c2
-https://github.com/madler/zlib/commit/7ecf7c7458578d05a20fa481436dd5c58db112f7
+We have removed zlib.3.pdf from our local copy, as it is a binary file which is
+not needed for our compilation.
 
-And we have inserted into our local copy of zutil.h, line 196, the following declaration:
-    ZEXTERN uLong ZEXPORT crc32_combine_gen64 OF((z_off_t));
+We have also applied the custom patches under the patches/zlib folder.

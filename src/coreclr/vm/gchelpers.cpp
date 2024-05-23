@@ -380,12 +380,6 @@ OBJECTREF AllocateSzArray(MethodTable* pArrayMT, INT32 cElements, GC_ALLOC_FLAGS
     _ASSERTE(pArrayMT->CheckInstanceActivated());
     _ASSERTE(pArrayMT->GetInternalCorElementType() == ELEMENT_TYPE_SZARRAY);
 
-    CorElementType elemType = pArrayMT->GetArrayElementType();
-
-    // Disallow the creation of void[] (an array of System.Void)
-    if (elemType == ELEMENT_TYPE_VOID)
-        COMPlusThrow(kArgumentException);
-
     if (cElements < 0)
         COMPlusThrow(kOverflowException);
 
@@ -408,7 +402,7 @@ OBJECTREF AllocateSzArray(MethodTable* pArrayMT, INT32 cElements, GC_ALLOC_FLAGS
 #endif
 
 #ifdef FEATURE_DOUBLE_ALIGNMENT_HINT
-    if ((elemType == ELEMENT_TYPE_R8) &&
+    if ((pArrayMT->GetArrayElementType() == ELEMENT_TYPE_R8) &&
         ((DWORD)cElements >= g_pConfig->GetDoubleArrayToLargeObjectHeapThreshold()))
     {
         STRESS_LOG2(LF_GC, LL_INFO10, "Allocating double MD array of size %d and length %d to large object heap\n", totalSize, cElements);
@@ -416,7 +410,7 @@ OBJECTREF AllocateSzArray(MethodTable* pArrayMT, INT32 cElements, GC_ALLOC_FLAGS
     }
 #endif
 
-    if (totalSize >= g_pConfig->GetGCLOHThreshold())
+    if (totalSize >= LARGE_OBJECT_SIZE && totalSize >= GCHeapUtilities::GetGCHeap()->GetLOHThreshold())
         flags |= GC_ALLOC_LARGE_OBJECT_HEAP;
 
     if (pArrayMT->ContainsPointers())
@@ -431,8 +425,8 @@ OBJECTREF AllocateSzArray(MethodTable* pArrayMT, INT32 cElements, GC_ALLOC_FLAGS
     else
     {
 #ifndef FEATURE_64BIT_ALIGNMENT
-        if ((DATA_ALIGNMENT < sizeof(double)) && (elemType == ELEMENT_TYPE_R8) &&
-            (totalSize < g_pConfig->GetGCLOHThreshold() - MIN_OBJECT_SIZE))
+        if ((DATA_ALIGNMENT < sizeof(double)) && (pArrayMT->GetArrayElementType() == ELEMENT_TYPE_R8) &&
+            (totalSize < GCHeapUtilities::GetGCHeap()->GetLOHThreshold() - MIN_OBJECT_SIZE))
         {
             // Creation of an array of doubles, not in the large object heap.
             // We want to align the doubles to 8 byte boundaries, but the GC gives us pointers aligned
@@ -440,7 +434,8 @@ OBJECTREF AllocateSzArray(MethodTable* pArrayMT, INT32 cElements, GC_ALLOC_FLAGS
             // dummy object.
             // If the GC gives us a 8 byte aligned address, we use it for the array and place the dummy
             // object after the array, otherwise we put the dummy object first, shifting the base of
-            // the array to an 8 byte aligned address.
+            // the array to an 8 byte aligned address. Also, we need to make sure that the syncblock of the
+            // second object is zeroed. GC won't take care of zeroing it out with GC_ALLOC_ZEROING_OPTIONAL.
             //
             // Note: on 64 bit platforms, the GC always returns 8 byte aligned addresses, and we don't
             // execute this code because DATA_ALIGNMENT < sizeof(double) is false.
@@ -453,14 +448,24 @@ OBJECTREF AllocateSzArray(MethodTable* pArrayMT, INT32 cElements, GC_ALLOC_FLAGS
             orArray = (ArrayBase*)Alloc(totalSize + MIN_OBJECT_SIZE, flags);
 
             Object* orDummyObject;
-            if ((size_t)orArray % sizeof(double))
+            if (((size_t)orArray % sizeof(double)) != 0)
             {
                 orDummyObject = orArray;
                 orArray = (ArrayBase*)((size_t)orArray + MIN_OBJECT_SIZE);
+                if (flags & GC_ALLOC_ZEROING_OPTIONAL)
+                {
+                    // clean the syncblock of the aligned array.
+                    *(((void**)orArray)-1) = 0;
+                }
             }
             else
             {
                 orDummyObject = (Object*)((size_t)orArray + totalSize);
+                if (flags & GC_ALLOC_ZEROING_OPTIONAL)
+                {
+                    // clean the syncblock of the dummy object.
+                    *(((void**)orDummyObject)-1) = 0;
+                }
             }
             _ASSERTE(((size_t)orArray % sizeof(double)) == 0);
             orDummyObject->SetMethodTable(g_pObjectClass);
@@ -491,6 +496,77 @@ OBJECTREF AllocateSzArray(MethodTable* pArrayMT, INT32 cElements, GC_ALLOC_FLAGS
 
     PublishObjectAndNotify(orArray, flags);
     return ObjectToOBJECTREF((Object*)orArray);
+}
+
+OBJECTREF TryAllocateFrozenSzArray(MethodTable* pArrayMT, INT32 cElements)
+{
+    CONTRACTL{
+        THROWS;
+        GC_TRIGGERS;
+        MODE_COOPERATIVE;
+    } CONTRACTL_END;
+
+    SetTypeHandleOnThreadForAlloc(TypeHandle(pArrayMT));
+
+    _ASSERTE(pArrayMT->CheckInstanceActivated());
+    _ASSERTE(pArrayMT->GetInternalCorElementType() == ELEMENT_TYPE_SZARRAY);
+
+    // The initial validation is copied from AllocateSzArray impl
+
+    if (pArrayMT->ContainsPointers() && cElements > 0)
+    {
+        // For arrays with GC pointers we can only work with empty arrays
+        return NULL;
+    }
+
+    if (cElements < 0)
+        COMPlusThrow(kOverflowException);
+
+    if ((SIZE_T)cElements > MaxArrayLength())
+        ThrowOutOfMemoryDimensionsExceeded();
+
+    SIZE_T componentSize = pArrayMT->GetComponentSize();
+#ifdef TARGET_64BIT
+    // POSITIVE_INT32 * UINT16 + SMALL_CONST
+    // this cannot overflow on 64bit
+    size_t totalSize = cElements * componentSize + pArrayMT->GetBaseSize();
+
+#else
+    S_SIZE_T safeTotalSize = S_SIZE_T((DWORD)cElements) * S_SIZE_T((DWORD)componentSize) + S_SIZE_T((DWORD)pArrayMT->GetBaseSize());
+    if (safeTotalSize.IsOverflow())
+        ThrowOutOfMemoryDimensionsExceeded();
+
+    size_t totalSize = safeTotalSize.Value();
+#endif
+
+    // FrozenObjectHeapManager doesn't yet support objects with a custom alignment,
+    // so we give up on arrays of value types requiring 8 byte alignment on 32bit platforms.
+    if ((DATA_ALIGNMENT < sizeof(double)) && (pArrayMT->GetArrayElementType() == ELEMENT_TYPE_R8))
+    {
+        return NULL;
+    }
+#ifdef FEATURE_64BIT_ALIGNMENT
+    MethodTable* pElementMT = pArrayMT->GetArrayElementTypeHandle().GetMethodTable();
+    if (pElementMT->RequiresAlign8() && pElementMT->IsValueType())
+    {
+        return NULL;
+    }
+#endif
+
+    FrozenObjectHeapManager* foh = SystemDomain::GetFrozenObjectHeapManager();
+    ArrayBase* orArray = static_cast<ArrayBase*>(
+        foh->TryAllocateObject(pArrayMT, PtrAlign(totalSize), [](Object* obj, void* elemCntPtr){
+            // Initialize newly allocated object before publish
+            static_cast<ArrayBase*>(obj)->m_NumComponents = *static_cast<DWORD*>(elemCntPtr);
+        }, &cElements));
+
+    if (orArray == nullptr)
+    {
+        // We failed to allocate on a frozen segment, fallback to AllocateSzArray
+        // E.g. if the array is too big to fit on a frozen segment
+        return NULL;
+    }
+    return ObjectToOBJECTREF(orArray);
 }
 
 void ThrowOutOfMemoryDimensionsExceeded()
@@ -559,11 +635,6 @@ OBJECTREF AllocateArrayEx(MethodTable *pArrayMT, INT32 *pArgs, DWORD dwNumArgs, 
     PREFIX_ASSUME(pArrayMT != NULL);
     CorElementType kind = pArrayMT->GetInternalCorElementType();
     _ASSERTE(kind == ELEMENT_TYPE_ARRAY || kind == ELEMENT_TYPE_SZARRAY);
-
-    CorElementType elemType = pArrayMT->GetArrayElementType();
-    // Disallow the creation of void[,] (a multi-dim  array of System.Void)
-    if (elemType == ELEMENT_TYPE_VOID)
-        COMPlusThrow(kArgumentException);
 
     // Calculate the total number of elements in the array
     UINT32 cElements;
@@ -638,7 +709,7 @@ OBJECTREF AllocateArrayEx(MethodTable *pArrayMT, INT32 *pArgs, DWORD dwNumArgs, 
 #endif
 
 #ifdef FEATURE_DOUBLE_ALIGNMENT_HINT
-    if ((elemType == ELEMENT_TYPE_R8) &&
+    if ((pArrayMT->GetArrayElementType() == ELEMENT_TYPE_R8) &&
         (cElements >= g_pConfig->GetDoubleArrayToLargeObjectHeapThreshold()))
     {
         STRESS_LOG2(LF_GC, LL_INFO10, "Allocating double MD array of size %d and length %d to large object heap\n", totalSize, cElements);
@@ -646,7 +717,7 @@ OBJECTREF AllocateArrayEx(MethodTable *pArrayMT, INT32 *pArgs, DWORD dwNumArgs, 
     }
 #endif
 
-    if (totalSize >= g_pConfig->GetGCLOHThreshold())
+    if (totalSize >= LARGE_OBJECT_SIZE && totalSize >= GCHeapUtilities::GetGCHeap()->GetLOHThreshold())
         flags |= GC_ALLOC_LARGE_OBJECT_HEAP;
 
     if (pArrayMT->ContainsPointers())
@@ -853,7 +924,7 @@ STRINGREF AllocateString( DWORD cchStringLength )
     SetTypeHandleOnThreadForAlloc(TypeHandle(g_pStringClass));
 
     GC_ALLOC_FLAGS flags = GC_ALLOC_NO_FLAGS;
-    if (totalSize >= g_pConfig->GetGCLOHThreshold())
+    if (totalSize >= LARGE_OBJECT_SIZE && totalSize >= GCHeapUtilities::GetGCHeap()->GetLOHThreshold())
         flags |= GC_ALLOC_LARGE_OBJECT_HEAP;
 
     StringObject* orString = (StringObject*)Alloc(totalSize, flags);
@@ -891,12 +962,15 @@ STRINGREF AllocateString(DWORD cchStringLength, bool preferFrozenHeap, bool* pIs
     if (preferFrozenHeap)
     {
         FrozenObjectHeapManager* foh = SystemDomain::GetFrozenObjectHeapManager();
-        orString = static_cast<StringObject*>(foh->TryAllocateObject(g_pStringClass, totalSize, /* publish = */false));
+
+        orString = static_cast<StringObject*>(foh->TryAllocateObject(
+            g_pStringClass, totalSize, [](Object* obj, void* pStrLen) {
+                // Initialize newly allocated object before publish
+                static_cast<StringObject*>(obj)->SetStringLength(*static_cast<DWORD*>(pStrLen));
+            }, &cchStringLength));
+
         if (orString != nullptr)
         {
-            orString->SetStringLength(cchStringLength);
-            // Publish needs to be postponed in this case because we need to specify string length 
-            PublishObjectAndNotify(orString, GC_ALLOC_NO_FLAGS);
             _ASSERTE(orString->GetBuffer()[cchStringLength] == W('\0'));
             orStringRef = ObjectToSTRINGREF(orString);
             *pIsFrozen = true;
@@ -947,6 +1021,7 @@ void AllocateComClassObject(ComClassFactory* pComClsFac, OBJECTREF* ppRefClass)
 // AllocateObject will throw OutOfMemoryException so don't need to check
 // for NULL return value from it.
 OBJECTREF AllocateObject(MethodTable *pMT
+                         , GC_ALLOC_FLAGS flags
 #ifdef FEATURE_COMINTEROP
                          , bool fHandleCom
 #endif
@@ -991,7 +1066,6 @@ OBJECTREF AllocateObject(MethodTable *pMT
 #endif // FEATURE_COMINTEROP
     else
     {
-        GC_ALLOC_FLAGS flags = GC_ALLOC_NO_FLAGS;
         if (pMT->ContainsPointers())
             flags |= GC_ALLOC_CONTAINS_REF;
 
@@ -999,7 +1073,7 @@ OBJECTREF AllocateObject(MethodTable *pMT
             flags |= GC_ALLOC_FINALIZE;
 
         DWORD totalSize = pMT->GetBaseSize();
-        if (totalSize >= g_pConfig->GetGCLOHThreshold())
+        if (totalSize >= LARGE_OBJECT_SIZE && totalSize >= GCHeapUtilities::GetGCHeap()->GetLOHThreshold())
             flags |= GC_ALLOC_LARGE_OBJECT_HEAP;
 
 #ifdef FEATURE_64BIT_ALIGNMENT
@@ -1034,6 +1108,37 @@ OBJECTREF AllocateObject(MethodTable *pMT
     }
 
     return UNCHECKED_OBJECTREF_TO_OBJECTREF(oref);
+}
+
+OBJECTREF TryAllocateFrozenObject(MethodTable* pObjMT)
+{
+    CONTRACTL {
+        THROWS;
+        GC_TRIGGERS;
+        MODE_COOPERATIVE;
+        PRECONDITION(CheckPointer(pObjMT));
+        PRECONDITION(pObjMT->CheckInstanceActivated());
+    } CONTRACTL_END;
+
+    SetTypeHandleOnThreadForAlloc(TypeHandle(pObjMT));
+
+    if (pObjMT->ContainsPointers() || pObjMT->IsComObjectType())
+    {
+        return NULL;
+    }
+
+#ifdef FEATURE_64BIT_ALIGNMENT
+    if (pObjMT->RequiresAlign8())
+    {
+        // Custom alignment is not supported for frozen objects yet.
+        return NULL;
+    }
+#endif // FEATURE_64BIT_ALIGNMENT
+
+    FrozenObjectHeapManager* foh = SystemDomain::GetFrozenObjectHeapManager();
+    Object* orObject = foh->TryAllocateObject(pObjMT, PtrAlign(pObjMT->GetBaseSize()));
+
+    return ObjectToOBJECTREF(orObject);
 }
 
 //========================================================================
@@ -1380,38 +1485,3 @@ void ErectWriteBarrierForMT(MethodTable **dst, MethodTable *ref)
         }
     }
 }
-
-//----------------------------------------------------------------------------
-//
-// Write Barrier Support for bulk copy ("Clone") operations
-//
-// StartPoint is the target bulk copy start point
-// len is the length of the bulk copy (in bytes)
-//
-//
-// Performance Note:
-//
-// This is implemented somewhat "conservatively", that is we
-// assume that all the contents of the bulk copy are object
-// references.  If they are not, and the value lies in the
-// ephemeral range, we will set false positives in the card table.
-//
-// We could use the pointer maps and do this more accurately if necessary
-
-#if defined(_MSC_VER) && defined(TARGET_X86)
-#pragma optimize("y", on)        // Small critical routines, don't put in EBP frame
-#endif //_MSC_VER && TARGET_X86
-
-void
-SetCardsAfterBulkCopy(Object **start, size_t len)
-{
-    // If the size is smaller than a pointer, no write barrier is required.
-    if (len >= sizeof(uintptr_t))
-    {
-        InlinedSetCardsAfterBulkCopyHelper(start, len);
-    }
-}
-
-#if defined(_MSC_VER) && defined(TARGET_X86)
-#pragma optimize("", on)        // Go back to command line default optimizations
-#endif //_MSC_VER && TARGET_X86

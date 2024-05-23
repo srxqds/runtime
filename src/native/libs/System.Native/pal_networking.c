@@ -62,6 +62,10 @@
 #if HAVE_SYS_FILIO_H
 #include <sys/filio.h>
 #endif
+#if HAVE_LINUX_ERRQUEUE_H
+#include <linux/errqueue.h>
+#endif
+
 
 #if HAVE_KQUEUE
 #if KEVENT_HAS_VOID_UDATA
@@ -659,15 +663,17 @@ static bool IsInBounds(const void* void_baseAddr, size_t len, const void* void_v
     return valueAddr >= baseAddr && (valueAddr + valueSize) <= (baseAddr + len);
 }
 
-int32_t SystemNative_GetIPSocketAddressSizes(int32_t* ipv4SocketAddressSize, int32_t* ipv6SocketAddressSize)
+int32_t SystemNative_GetSocketAddressSizes(int32_t* ipv4SocketAddressSize, int32_t* ipv6SocketAddressSize, int32_t* udsSocketAddressSize, int32_t* maxSocketAddressSize)
 {
-    if (ipv4SocketAddressSize == NULL || ipv6SocketAddressSize == NULL)
+    if (ipv4SocketAddressSize == NULL || ipv6SocketAddressSize == NULL || udsSocketAddressSize == NULL || maxSocketAddressSize == NULL)
     {
         return Error_EFAULT;
     }
 
     *ipv4SocketAddressSize = sizeof(struct sockaddr_in);
     *ipv6SocketAddressSize = sizeof(struct sockaddr_in6);
+    *udsSocketAddressSize = sizeof(struct sockaddr_un);
+    *maxSocketAddressSize = sizeof(struct sockaddr_storage);
     return Error_SUCCESS;
 }
 
@@ -1323,7 +1329,11 @@ int32_t SystemNative_SetSendTimeout(intptr_t socket, int32_t millisecondsTimeout
 
 static int8_t ConvertSocketFlagsPalToPlatform(int32_t palFlags, int* platformFlags)
 {
-    const int32_t SupportedFlagsMask = SocketFlags_MSG_OOB | SocketFlags_MSG_PEEK | SocketFlags_MSG_DONTROUTE | SocketFlags_MSG_TRUNC | SocketFlags_MSG_CTRUNC;
+    const int32_t SupportedFlagsMask =
+#ifdef MSG_ERRQUEUE
+                        SocketFlags_MSG_ERRQUEUE |
+#endif
+                        SocketFlags_MSG_OOB | SocketFlags_MSG_PEEK | SocketFlags_MSG_DONTROUTE | SocketFlags_MSG_TRUNC | SocketFlags_MSG_CTRUNC | SocketFlags_MSG_DONTWAIT;
 
     if ((palFlags & ~SupportedFlagsMask) != 0)
     {
@@ -1333,9 +1343,15 @@ static int8_t ConvertSocketFlagsPalToPlatform(int32_t palFlags, int* platformFla
     *platformFlags = ((palFlags & SocketFlags_MSG_OOB) == 0 ? 0 : MSG_OOB) |
                      ((palFlags & SocketFlags_MSG_PEEK) == 0 ? 0 : MSG_PEEK) |
                      ((palFlags & SocketFlags_MSG_DONTROUTE) == 0 ? 0 : MSG_DONTROUTE) |
+                     ((palFlags & SocketFlags_MSG_DONTWAIT) == 0 ? 0 : MSG_DONTWAIT) |
                      ((palFlags & SocketFlags_MSG_TRUNC) == 0 ? 0 : MSG_TRUNC) |
                      ((palFlags & SocketFlags_MSG_CTRUNC) == 0 ? 0 : MSG_CTRUNC);
-
+#ifdef MSG_ERRQUEUE
+    if ((palFlags & SocketFlags_MSG_ERRQUEUE) != 0)
+    {
+        *platformFlags |= MSG_ERRQUEUE;
+    }
+#endif
     return true;
 }
 
@@ -1376,6 +1392,51 @@ int32_t SystemNative_Receive(intptr_t socket, void* buffer, int32_t bufferLen, i
     }
 
     *received = 0;
+    return SystemNative_ConvertErrorPlatformToPal(errno);
+}
+
+int32_t SystemNative_ReceiveSocketError(intptr_t socket, MessageHeader* messageHeader)
+{
+    int fd = ToFileDescriptor(socket);
+    ssize_t res;
+
+#if HAVE_LINUX_ERRQUEUE_H
+    char buffer[sizeof(struct sock_extended_err) + sizeof(struct sockaddr_storage)];
+    messageHeader->ControlBufferLen = sizeof(buffer);
+    messageHeader->ControlBuffer = (void*)buffer;
+
+    struct msghdr header;
+    ConvertMessageHeaderToMsghdr(&header, messageHeader, fd);
+
+    while ((res = recvmsg(fd, &header, SocketFlags_MSG_DONTWAIT | SocketFlags_MSG_ERRQUEUE)) < 0 && errno == EINTR);
+
+    struct cmsghdr *cmsg;
+    for (cmsg = CMSG_FIRSTHDR(&header); cmsg; cmsg = GET_CMSG_NXTHDR(&header, cmsg))
+    {
+        if (cmsg->cmsg_level == SOL_IP && cmsg->cmsg_type == IP_RECVERR)
+        {
+            struct sock_extended_err *e = (struct sock_extended_err *)CMSG_DATA(cmsg);
+            if (e->ee_origin == SO_EE_ORIGIN_ICMP)
+            {
+                int size = (int)(cmsg->cmsg_len - sizeof(struct sock_extended_err));
+                messageHeader->SocketAddressLen = size < messageHeader->SocketAddressLen ? size : messageHeader->SocketAddressLen;
+                memcpy(messageHeader->SocketAddress, (struct sockaddr_in*)(e+1), (size_t)messageHeader->SocketAddressLen);
+                return Error_SUCCESS;
+            }
+        }
+    }
+#else
+    res = -1;
+    errno = ENOTSUP;
+#endif
+
+    messageHeader->SocketAddressLen = 0;
+
+    if (res != -1)
+    {
+        return Error_SUCCESS;
+    }
+
     return SystemNative_ConvertErrorPlatformToPal(errno);
 }
 
@@ -1793,6 +1854,12 @@ static bool TryGetPlatformSocketOption(int32_t socketOptionLevel, int32_t socket
                     return true;
 #endif
 
+#ifdef IP_DONTFRAG
+                case SocketOptionName_SO_IP_DONTFRAGMENT:
+                    *optName = IP_DONTFRAG;
+                    return true;
+#endif
+
 #ifdef IP_ADD_SOURCE_MEMBERSHIP
                 case SocketOptionName_SO_IP_ADD_SOURCE_MEMBERSHIP:
                     *optName = IP_ADD_SOURCE_MEMBERSHIP;
@@ -2009,7 +2076,7 @@ int32_t SystemNative_GetSockOpt(
             }
 
             struct socket_fdinfo fdi;
-            if (proc_pidfdinfo(getpid(), fd, PROC_PIDFDSOCKETINFO, &fdi, sizeof(fdi)) < sizeof(fdi))
+            if (proc_pidfdinfo(getpid(), fd, PROC_PIDFDSOCKETINFO, &fdi, sizeof(fdi)) < (int)sizeof(fdi))
             {
                 return SystemNative_ConvertErrorPlatformToPal(errno);
             }
@@ -2522,7 +2589,7 @@ int32_t SystemNative_GetSocketType(intptr_t socket, int32_t* addressFamily, int3
 
 #if HAVE_SYS_PROCINFO_H
     struct socket_fdinfo fdi;
-    if (proc_pidfdinfo(getpid(), fd, PROC_PIDFDSOCKETINFO, &fdi, sizeof(fdi)) < sizeof(fdi))
+    if (proc_pidfdinfo(getpid(), fd, PROC_PIDFDSOCKETINFO, &fdi, sizeof(fdi)) < (int)sizeof(fdi))
     {
         return Error_EFAULT;
     }
@@ -3036,51 +3103,6 @@ int32_t SystemNative_PlatformSupportsDualModeIPv4PacketInfo(void)
 #endif
 }
 
-static char* GetNameFromUid(uid_t uid)
-{
-    size_t bufferLength = 512;
-    while (1)
-    {
-        char *buffer = (char*)malloc(bufferLength);
-        if (buffer == NULL)
-            return NULL;
-
-        struct passwd pw;
-        struct passwd* result;
-        if (getpwuid_r(uid, &pw, buffer, bufferLength, &result) == 0)
-        {
-            if (result == NULL)
-            {
-                errno = ENOENT;
-                free(buffer);
-                return NULL;
-            }
-            else
-            {
-                char* name = strdup(pw.pw_name);
-                free(buffer);
-                return name;
-            }
-        }
-
-        free(buffer);
-        size_t tmpBufferLength;
-        if (errno != ERANGE || !multiply_s(bufferLength, (size_t)2, &tmpBufferLength))
-        {
-            return NULL;
-        }
-        bufferLength = tmpBufferLength;
-    }
-}
-
-char* SystemNative_GetPeerUserName(intptr_t socket)
-{
-    uid_t euid;
-    return SystemNative_GetPeerID(socket, &euid) == 0 ?
-        GetNameFromUid(euid) :
-        NULL;
-}
-
 void SystemNative_GetDomainSocketSizes(int32_t* pathOffset, int32_t* pathSize, int32_t* addressSize)
 {
     assert(pathOffset != NULL);
@@ -3121,6 +3143,11 @@ int32_t SystemNative_Disconnect(intptr_t socket)
 #elif HAVE_DISCONNECTX
     // disconnectx causes a FIN close on OSX. It's the best we can do.
     err = disconnectx(fd, SAE_ASSOCID_ANY, SAE_CONNID_ANY);
+    if (err != 0)
+    {
+        // This happens on Unix Domain Sockets as disconnectx is only supported on AF_INET and AF_INET6
+        err = shutdown(fd, SHUT_RDWR);
+    }
 #else
     // best-effort, this may cause a FIN close.
     err = shutdown(fd, SHUT_RDWR);
@@ -3196,8 +3223,8 @@ int32_t SystemNative_SendFile(intptr_t out_fd, intptr_t in_fd, int64_t offset, i
     char* buffer = NULL;
 
     // Save the original input file position and seek to the offset position
-    off_t inputFileOrigOffset = lseek(in_fd, 0, SEEK_CUR);
-    if (inputFileOrigOffset == -1 || lseek(in_fd, offtOffset, SEEK_SET) == -1)
+    off_t inputFileOrigOffset = lseek(infd, 0, SEEK_CUR);
+    if (inputFileOrigOffset == -1 || lseek(infd, offtOffset, SEEK_SET) == -1)
     {
         goto error;
     }
@@ -3217,7 +3244,7 @@ int32_t SystemNative_SendFile(intptr_t out_fd, intptr_t in_fd, int64_t offset, i
 
         // Read up to what will fit in our buffer.  We're done if we get back 0 bytes or read 'count' bytes
         ssize_t bytesRead;
-        while ((bytesRead = read(in_fd, buffer, numBytesToRead)) < 0 && errno == EINTR);
+        while ((bytesRead = read(infd, buffer, numBytesToRead)) < 0 && errno == EINTR);
         if (bytesRead == -1)
         {
             goto error;
@@ -3233,7 +3260,7 @@ int32_t SystemNative_SendFile(intptr_t out_fd, intptr_t in_fd, int64_t offset, i
         while (bytesRead > 0)
         {
             ssize_t bytesWritten;
-            while ((bytesWritten = write(out_fd, buffer + writeOffset, (size_t)bytesRead)) < 0 && errno == EINTR);
+            while ((bytesWritten = write(outfd, buffer + writeOffset, (size_t)bytesRead)) < 0 && errno == EINTR);
             if (bytesWritten == -1)
             {
                 goto error;
@@ -3247,7 +3274,7 @@ int32_t SystemNative_SendFile(intptr_t out_fd, intptr_t in_fd, int64_t offset, i
     }
 
     // Restore the original input file position
-    if (lseek(in_fd, inputFileOrigOffset, SEEK_SET) == -1)
+    if (lseek(infd, inputFileOrigOffset, SEEK_SET) == -1)
     {
         goto error;
     }

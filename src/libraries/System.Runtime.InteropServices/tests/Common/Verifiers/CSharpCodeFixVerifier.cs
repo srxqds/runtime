@@ -10,13 +10,10 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CodeFixes;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Testing;
-using Microsoft.CodeAnalysis.CSharp.Testing.XUnit;
 using Microsoft.CodeAnalysis.Diagnostics;
 using Microsoft.CodeAnalysis.Testing;
-using Microsoft.CodeAnalysis.Testing.Verifiers;
-using Microsoft.Interop.UnitTests;
 
-namespace LibraryImportGenerator.UnitTests.Verifiers
+namespace Microsoft.Interop.UnitTests.Verifiers
 {
     public static class CSharpCodeFixVerifier<TAnalyzer, TCodeFix>
         where TAnalyzer : DiagnosticAnalyzer, new()
@@ -24,15 +21,15 @@ namespace LibraryImportGenerator.UnitTests.Verifiers
     {
         /// <inheritdoc cref="CodeFixVerifier{TAnalyzer, TCodeFix, TTest, TVerifier}.Diagnostic()"/>
         public static DiagnosticResult Diagnostic()
-            => CodeFixVerifier<TAnalyzer, TCodeFix>.Diagnostic();
+            => CSharpCodeFixVerifier<TAnalyzer, TCodeFix, DefaultVerifier>.Diagnostic();
 
         /// <inheritdoc cref="CodeFixVerifier{TAnalyzer, TCodeFix, TTest, TVerifier}.Diagnostic(string)"/>
         public static DiagnosticResult Diagnostic(string diagnosticId)
-            => CodeFixVerifier<TAnalyzer, TCodeFix>.Diagnostic(diagnosticId);
+            => CSharpCodeFixVerifier<TAnalyzer, TCodeFix, DefaultVerifier>.Diagnostic(diagnosticId);
 
         /// <inheritdoc cref="CodeFixVerifier{TAnalyzer, TCodeFix, TTest, TVerifier}.Diagnostic(DiagnosticDescriptor)"/>
         public static DiagnosticResult Diagnostic(DiagnosticDescriptor descriptor)
-            => CodeFixVerifier<TAnalyzer, TCodeFix>.Diagnostic(descriptor);
+            => CSharpCodeFixVerifier<TAnalyzer, TCodeFix, DefaultVerifier>.Diagnostic(descriptor);
 
         /// <summary>
         /// Create a <see cref="DiagnosticResult"/> with the diagnostic message created with the provided arguments.
@@ -110,7 +107,7 @@ namespace LibraryImportGenerator.UnitTests.Verifiers
             await test.RunAsync(CancellationToken.None);
         }
 
-        internal class Test : CSharpCodeFixTest<TAnalyzer, TCodeFix, XUnitVerifier>
+        internal class Test : CSharpCodeFixTest<TAnalyzer, TCodeFix, DefaultVerifier>
         {
             public Test()
             {
@@ -120,45 +117,7 @@ namespace LibraryImportGenerator.UnitTests.Verifiers
                 TestState.AdditionalReferences.AddRange(SourceGenerators.Tests.LiveReferencePack.GetMetadataReferences());
                 TestState.AdditionalReferences.Add(TestUtils.GetAncillaryReference());
 
-                SolutionTransforms.Add((solution, projectId) =>
-                {
-                    var project = solution.GetProject(projectId)!;
-                    var compilationOptions = project.CompilationOptions!;
-                    var diagnosticOptions = compilationOptions.SpecificDiagnosticOptions.SetItems(CSharpVerifierHelper.NullableWarnings);
-
-                    // Explicitly enable diagnostics that are not enabled by default
-                    var enableAnalyzersOptions = new System.Collections.Generic.Dictionary<string, ReportDiagnostic>();
-                    foreach (var analyzer in GetDiagnosticAnalyzers().ToImmutableArray())
-                    {
-                        foreach (var diagnostic in analyzer.SupportedDiagnostics)
-                        {
-                            if (diagnostic.IsEnabledByDefault)
-                                continue;
-
-                            // Map the default severity to the reporting behaviour.
-                            // We cannot simply use ReportDiagnostic.Default here, as diagnostics that are not enabled by default
-                            // are treated as suppressed (regardless of their default severity).
-                            var report = diagnostic.DefaultSeverity switch
-                            {
-                                DiagnosticSeverity.Error => ReportDiagnostic.Error,
-                                DiagnosticSeverity.Warning => ReportDiagnostic.Warn,
-                                DiagnosticSeverity.Info => ReportDiagnostic.Info,
-                                DiagnosticSeverity.Hidden => ReportDiagnostic.Hidden,
-                                _ => ReportDiagnostic.Default
-                            };
-                            enableAnalyzersOptions.Add(diagnostic.Id, report);
-                        }
-                    }
-
-                    compilationOptions = compilationOptions.WithSpecificDiagnosticOptions(
-                        compilationOptions.SpecificDiagnosticOptions
-                            .SetItems(CSharpVerifierHelper.NullableWarnings)
-                            .AddRange(enableAnalyzersOptions)
-                            .AddRange(TestUtils.BindingRedirectWarnings));
-                    solution = solution.WithProjectCompilationOptions(projectId, compilationOptions);
-                    solution = solution.WithProjectParseOptions(projectId, ((CSharpParseOptions)project.ParseOptions!).WithLanguageVersion(LanguageVersion.Preview));
-                    return solution;
-                });
+                SolutionTransforms.Add(CSharpVerifierHelper.GetAllDiagonsticsEnabledTransform(GetDiagnosticAnalyzers()));
             }
 
             protected override CompilationWithAnalyzers CreateCompilationWithAnalyzers(Compilation compilation, ImmutableArray<DiagnosticAnalyzer> analyzers, AnalyzerOptions options, CancellationToken cancellationToken)
@@ -186,6 +145,11 @@ namespace LibraryImportGenerator.UnitTests.Verifiers
                             }
                             return true;
                         }));
+            }
+
+            protected override ParseOptions CreateParseOptions()
+            {
+                return new CSharpParseOptions(LanguageVersion.Preview, DocumentationMode.Diagnose);
             }
         }
     }

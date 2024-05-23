@@ -206,6 +206,8 @@ typedef enum
     SocketFlags_MSG_DONTROUTE = 0x0004, // SocketFlags.DontRoute
     SocketFlags_MSG_TRUNC = 0x0100,     // SocketFlags.Truncated
     SocketFlags_MSG_CTRUNC = 0x0200,    // SocketFlags.ControlDataTruncated
+    SocketFlags_MSG_DONTWAIT = 0x1000,  // used privately by Ping
+    SocketFlags_MSG_ERRQUEUE = 0x2000,  // used privately by Ping
 } SocketFlags;
 
 /*
@@ -312,7 +314,7 @@ PALEXPORT int32_t SystemNative_GetDomainName(uint8_t* name, int32_t nameLength);
 
 PALEXPORT int32_t SystemNative_GetHostName(uint8_t* name, int32_t nameLength);
 
-PALEXPORT int32_t SystemNative_GetIPSocketAddressSizes(int32_t* ipv4SocketAddressSize, int32_t* ipv6SocketAddressSize);
+PALEXPORT int32_t SystemNative_GetSocketAddressSizes(int32_t* ipv4SocketAddressSize, int32_t* ipv6SocketAddressSize, int32_t* udsSocketAddressSize, int32_t* maxSocketAddressSize);
 
 PALEXPORT int32_t SystemNative_GetAddressFamily(const uint8_t* socketAddress, int32_t socketAddressLen, int32_t* addressFamily);
 
@@ -355,6 +357,8 @@ PALEXPORT int32_t SystemNative_SetSendTimeout(intptr_t socket, int32_t milliseco
 PALEXPORT int32_t SystemNative_Receive(intptr_t socket, void* buffer, int32_t bufferLen, int32_t flags, int32_t* received);
 
 PALEXPORT int32_t SystemNative_ReceiveMessage(intptr_t socket, MessageHeader* messageHeader, int32_t flags, int64_t* received);
+
+PALEXPORT int32_t SystemNative_ReceiveSocketError(intptr_t socket, MessageHeader* messageHeader);
 
 PALEXPORT int32_t SystemNative_Send(intptr_t socket, void* buffer, int32_t bufferLen, int32_t flags, int32_t* sent);
 
@@ -410,8 +414,6 @@ PALEXPORT int32_t SystemNative_TryChangeSocketEventRegistration(
 PALEXPORT int32_t SystemNative_WaitForSocketEvents(intptr_t port, SocketEvent* buffer, int32_t* count);
 
 PALEXPORT int32_t SystemNative_PlatformSupportsDualModeIPv4PacketInfo(void);
-
-PALEXPORT char* SystemNative_GetPeerUserName(intptr_t socket);
 
 PALEXPORT void SystemNative_GetDomainSocketSizes(int32_t* pathOffset, int32_t* pathSize, int32_t* addressSize);
 

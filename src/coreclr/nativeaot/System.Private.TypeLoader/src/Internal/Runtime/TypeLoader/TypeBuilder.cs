@@ -6,19 +6,13 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 
+using Internal.NativeFormat;
 using Internal.Runtime.Augments;
 using Internal.Runtime.CompilerServices;
-
-using Internal.NativeFormat;
 using Internal.TypeSystem;
 
 namespace Internal.Runtime.TypeLoader
 {
-    using DynamicGenericsRegistrationData = TypeLoaderEnvironment.DynamicGenericsRegistrationData;
-    using GenericTypeEntry = TypeLoaderEnvironment.GenericTypeEntry;
-    using GenericMethodEntry = TypeLoaderEnvironment.GenericMethodEntry;
-    using MethodDescBasedGenericMethodLookup = TypeLoaderEnvironment.MethodDescBasedGenericMethodLookup;
-
     internal static class LowLevelListExtensions
     {
         public static void Expand<T>(this LowLevelList<T> list, int count)
@@ -28,17 +22,6 @@ namespace Internal.Runtime.TypeLoader
 
             while (list.Count < count)
                 list.Add(default(T));
-        }
-
-        public static bool HasSetBits(this LowLevelList<bool> list)
-        {
-            for (int index = 0; index < list.Count; index++)
-            {
-                if (list[index])
-                    return true;
-            }
-
-            return false;
         }
     }
 
@@ -84,7 +67,7 @@ namespace Internal.Runtime.TypeLoader
 
             IntPtr methodDictionary;
 
-            if (TypeLoaderEnvironment.Instance.TryLookupGenericMethodDictionary(new MethodDescBasedGenericMethodLookup(method), out methodDictionary))
+            if (TypeLoaderEnvironment.Instance.TryLookupGenericMethodDictionary(new TypeLoaderEnvironment.MethodDescBasedGenericMethodLookup(method), out methodDictionary))
             {
                 TypeLoaderLogger.WriteLine("Found DICT = " + methodDictionary.LowLevelToString() + " for method " + method.ToString());
                 method.AssociateWithRuntimeMethodDictionary(methodDictionary);
@@ -159,7 +142,7 @@ namespace Internal.Runtime.TypeLoader
 
         private void InsertIntoNeedsTypeHandleList(TypeDesc type)
         {
-            if ((type is DefType) || (type is ArrayType) || (type is PointerType) || (type is ByRefType))
+            if ((type is DefType) || (type is ArrayType) || (type is PointerType) || (type is ByRefType) || (type is FunctionPointerType))
             {
                 _typesThatNeedTypeHandles.Add(type);
             }
@@ -233,7 +216,7 @@ namespace Internal.Runtime.TypeLoader
 
                 if (type is ArrayType typeAsArrayType)
                 {
-                    if (typeAsArrayType.IsSzArray && !typeAsArrayType.ElementType.IsPointer)
+                    if (typeAsArrayType.IsSzArray && !typeAsArrayType.ElementType.IsPointer && !typeAsArrayType.ElementType.IsFunctionPointer)
                     {
                         TypeDesc.ComputeTemplate(state);
                         Debug.Assert(state.TemplateType != null && state.TemplateType is ArrayType && !state.TemplateType.RuntimeTypeHandle.IsNull());
@@ -242,9 +225,15 @@ namespace Internal.Runtime.TypeLoader
                     }
                     else
                     {
-                        Debug.Assert(typeAsArrayType.IsMdArray || typeAsArrayType.ElementType.IsPointer);
+                        Debug.Assert(typeAsArrayType.IsMdArray || typeAsArrayType.ElementType.IsPointer || typeAsArrayType.ElementType.IsFunctionPointer);
                     }
                 }
+            }
+            else if (type is FunctionPointerType functionPointerType)
+            {
+                RegisterForPreparation(functionPointerType.Signature.ReturnType);
+                foreach (TypeDesc paramType in functionPointerType.Signature)
+                    RegisterForPreparation(paramType);
             }
             else
             {
@@ -311,7 +300,7 @@ namespace Internal.Runtime.TypeLoader
             if (method.UnboxingStub)
             {
                 // Strip unboxing stub, note the first parameter which is false
-                nonTemplateMethod = (InstantiatedMethod)method.Context.ResolveGenericMethodInstantiation(false, (DefType)method.OwningType, method.NameAndSignature, method.Instantiation, IntPtr.Zero, false);
+                nonTemplateMethod = (InstantiatedMethod)method.Context.ResolveGenericMethodInstantiation(false, (DefType)method.OwningType, method.NameAndSignature, method.Instantiation);
             }
 
             uint nativeLayoutInfoToken;
@@ -322,9 +311,11 @@ namespace Internal.Runtime.TypeLoader
                 throw new MissingTemplateException();
             }
 
-            if (templateMethod.FunctionPointer != IntPtr.Zero)
+            // We might have a mismatch between unboxing/non-unboxing variants so only remember it for static methods
+            if (TypeLoaderEnvironment.IsStaticMethodSignature(templateMethod.NameAndSignature)
+                && templateMethod.FunctionPointer != IntPtr.Zero)
             {
-                nonTemplateMethod.SetFunctionPointer(templateMethod.FunctionPointer, isFunctionPointerUSG: false);
+                nonTemplateMethod.SetFunctionPointer(templateMethod.FunctionPointer);
             }
 
             // Ensure that if this method is non-shareable from a normal canonical perspective, then
@@ -380,7 +371,7 @@ namespace Internal.Runtime.TypeLoader
             NativeParser typeInfoParser = state.GetParserForNativeLayoutInfo();
             NativeLayoutInfoLoadContext context = state.NativeLayoutInfo.LoadContext;
 
-            NativeParser baseTypeParser = new NativeParser();
+            NativeParser baseTypeParser = default;
 
             BagElementKind kind;
             while ((kind = typeInfoParser.GetBagElementKind()) != BagElementKind.End)
@@ -432,14 +423,6 @@ namespace Internal.Runtime.TypeLoader
                         state.ThreadStaticDesc = context.GetGCStaticInfo(typeInfoParser.GetUnsigned());
                         break;
 
-                    case BagElementKind.GenericVarianceInfo:
-                        TypeLoaderLogger.WriteLine("Found BagElementKind.GenericVarianceInfo");
-                        NativeParser varianceInfoParser = typeInfoParser.GetParserFromRelativeOffset();
-                        state.GenericVarianceFlags = new GenericVariance[varianceInfoParser.GetSequenceCount()];
-                        for (int i = 0; i < state.GenericVarianceFlags.Length; i++)
-                            state.GenericVarianceFlags[i] = checked((GenericVariance)varianceInfoParser.GetUnsigned());
-                        break;
-
                     case BagElementKind.FieldLayout:
                         TypeLoaderLogger.WriteLine("Found BagElementKind.FieldLayout");
                         typeInfoParser.SkipInteger(); // Handled in type layout algorithm
@@ -482,7 +465,7 @@ namespace Internal.Runtime.TypeLoader
             private int _size;
             private bool _isReferenceTypeGCLayout;
 
-            public static GCLayout None { get { return new GCLayout(); } }
+            public static GCLayout None { get { return default(GCLayout); } }
             public static GCLayout SingleReference { get; } = new GCLayout(new LowLevelList<bool>(new bool[1] { true }), false);
 
             public bool IsNone { get { return _bitfield == null && _gcdesc == null; } }
@@ -590,14 +573,14 @@ namespace Internal.Runtime.TypeLoader
         {
             TypeBuilderState state = type.GetTypeBuilderState();
 
-            Debug.Assert(type is DefType || type is ArrayType || type is PointerType || type is ByRefType);
+            Debug.Assert(type is DefType || type is ArrayType || type is PointerType || type is ByRefType || type is FunctionPointerType);
 
             RuntimeTypeHandle rtt = EETypeCreator.CreateEEType(type, state);
 
             if (state.ThreadDataSize != 0)
                 TypeLoaderEnvironment.Instance.RegisterDynamicThreadStaticsInfo(state.HalfBakedRuntimeTypeHandle, state.ThreadStaticOffset, state.ThreadStaticDesc);
 
-            TypeLoaderLogger.WriteLine("Allocated new type " + type.ToString() + " with hashcode value = 0x" + type.GetHashCode().LowLevelToString() + " with MethodTable = " + rtt.ToIntPtr().LowLevelToString() + " of size " + rtt.ToEETypePtr()->BaseSize.LowLevelToString());
+            TypeLoaderLogger.WriteLine("Allocated new type " + type.ToString() + " with hashcode value = 0x" + type.GetHashCode().LowLevelToString() + " with MethodTable = " + rtt.ToIntPtr().LowLevelToString() + " of size " + rtt.ToEETypePtr()->RawBaseSize.LowLevelToString());
         }
 
         private static void AllocateRuntimeMethodDictionary(InstantiatedMethod method)
@@ -788,15 +771,9 @@ namespace Internal.Runtime.TypeLoader
 
                     state.HalfBakedRuntimeTypeHandle.SetGenericDefinition(GetRuntimeTypeHandle(typeAsDefType.GetTypeDefinition()));
                     Instantiation instantiation = typeAsDefType.Instantiation;
-                    state.HalfBakedRuntimeTypeHandle.SetGenericArity((uint)instantiation.Length);
                     for (int argIndex = 0; argIndex < instantiation.Length; argIndex++)
                     {
                         state.HalfBakedRuntimeTypeHandle.SetGenericArgument(argIndex, GetRuntimeTypeHandle(instantiation[argIndex]));
-                        if (state.GenericVarianceFlags != null)
-                        {
-                            Debug.Assert(state.GenericVarianceFlags.Length == instantiation.Length);
-                            state.HalfBakedRuntimeTypeHandle.SetGenericVariance(argIndex, state.GenericVarianceFlags[argIndex]);
-                        }
                     }
                 }
 
@@ -843,13 +820,26 @@ namespace Internal.Runtime.TypeLoader
                     }
                 }
             }
+            else if (type is FunctionPointerType)
+            {
+                MethodSignature sig = ((FunctionPointerType)type).Signature;
+                unsafe
+                {
+                    MethodTable* halfBakedMethodTable = state.HalfBakedRuntimeTypeHandle.ToEETypePtr();
+                    halfBakedMethodTable->FunctionPointerReturnType = GetRuntimeTypeHandle(sig.ReturnType).ToEETypePtr();
+                    Debug.Assert(halfBakedMethodTable->NumFunctionPointerParameters == sig.Length);
+                    MethodTableList paramList = halfBakedMethodTable->FunctionPointerParameters;
+                    for (int i = 0; i < sig.Length; i++)
+                        paramList[i] = GetRuntimeTypeHandle(sig[i]).ToEETypePtr();
+                }
+            }
             else
             {
                 Debug.Assert(false);
             }
         }
 
-        private IEnumerable<GenericTypeEntry> TypesToRegister()
+        private IEnumerable<TypeLoaderEnvironment.GenericTypeEntry> TypesToRegister()
         {
             for (int i = 0; i < _typesThatNeedTypeHandles.Count; i++)
             {
@@ -857,7 +847,7 @@ namespace Internal.Runtime.TypeLoader
                 if (typeAsDefType == null)
                     continue;
 
-                yield return new GenericTypeEntry
+                yield return new TypeLoaderEnvironment.GenericTypeEntry
                 {
                     _genericTypeDefinitionHandle = GetRuntimeTypeHandle(typeAsDefType.GetTypeDefinition()),
                     _genericTypeArgumentHandles = GetRuntimeTypeHandles(typeAsDefType.Instantiation),
@@ -866,12 +856,12 @@ namespace Internal.Runtime.TypeLoader
             }
         }
 
-        private IEnumerable<GenericMethodEntry> MethodsToRegister()
+        private IEnumerable<TypeLoaderEnvironment.GenericMethodEntry> MethodsToRegister()
         {
             for (int i = 0; i < _methodsThatNeedDictionaries.Count; i++)
             {
                 InstantiatedMethod method = _methodsThatNeedDictionaries[i];
-                yield return new GenericMethodEntry
+                yield return new TypeLoaderEnvironment.GenericMethodEntry
                 {
                     _declaringTypeHandle = GetRuntimeTypeHandle(method.OwningType),
                     _genericMethodArgumentHandles = GetRuntimeTypeHandles(method.Instantiation),
@@ -890,7 +880,7 @@ namespace Internal.Runtime.TypeLoader
                     typesToRegisterCount++;
             }
 
-            DynamicGenericsRegistrationData registrationData = new DynamicGenericsRegistrationData
+            var registrationData = new TypeLoaderEnvironment.DynamicGenericsRegistrationData
             {
                 TypesToRegisterCount = typesToRegisterCount,
                 TypesToRegister = (typesToRegisterCount != 0) ? TypesToRegister() : null,
@@ -942,24 +932,25 @@ namespace Internal.Runtime.TypeLoader
             int newArrayTypesCount = 0;
             int newPointerTypesCount = 0;
             int newByRefTypesCount = 0;
+            int newFunctionPointerTypesCount = 0;
             int[] mdArrayNewTypesCount = null;
 
             for (int i = 0; i < _typesThatNeedTypeHandles.Count; i++)
             {
-                ParameterizedType typeAsParameterizedType = _typesThatNeedTypeHandles[i] as ParameterizedType;
-                if (typeAsParameterizedType == null)
-                    continue;
+                TypeDesc type = _typesThatNeedTypeHandles[i];
 
-                if (typeAsParameterizedType.IsSzArray)
+                if (type.IsSzArray)
                     newArrayTypesCount++;
-                else if (typeAsParameterizedType.IsPointer)
+                else if (type.IsPointer)
                     newPointerTypesCount++;
-                else if (typeAsParameterizedType.IsByRef)
+                else if (type.IsFunctionPointer)
+                    newFunctionPointerTypesCount++;
+                else if (type.IsByRef)
                     newByRefTypesCount++;
-                else if (typeAsParameterizedType.IsMdArray)
+                else if (type.IsMdArray)
                 {
                     mdArrayNewTypesCount ??= new int[MDArray.MaxRank + 1];
-                    mdArrayNewTypesCount[((ArrayType)typeAsParameterizedType).Rank]++;
+                    mdArrayNewTypesCount[((ArrayType)type).Rank]++;
                 }
             }
             // Reserve space in array/pointer cache's so that the actual adding can be fault-free.
@@ -981,6 +972,7 @@ namespace Internal.Runtime.TypeLoader
 
             TypeSystemContext.PointerTypesCache.Reserve(TypeSystemContext.PointerTypesCache.Count + newPointerTypesCount);
             TypeSystemContext.ByRefTypesCache.Reserve(TypeSystemContext.ByRefTypesCache.Count + newByRefTypesCount);
+            TypeSystemContext.FunctionPointerTypesCache.Reserve(TypeSystemContext.FunctionPointerTypesCache.Count + newFunctionPointerTypesCount);
 
             // Finally, register all generic types and methods atomically with the runtime
             RegisterGenericTypesAndMethods();
@@ -998,7 +990,14 @@ namespace Internal.Runtime.TypeLoader
             {
                 ParameterizedType typeAsParameterizedType = _typesThatNeedTypeHandles[i] as ParameterizedType;
                 if (typeAsParameterizedType == null)
+                {
+                    if (_typesThatNeedTypeHandles[i] is FunctionPointerType typeAsFunctionPointerType)
+                    {
+                        Debug.Assert(!typeAsFunctionPointerType.RuntimeTypeHandle.IsNull());
+                        TypeSystemContext.FunctionPointerTypesCache.AddOrGetExisting(typeAsFunctionPointerType.RuntimeTypeHandle);
+                    }
                     continue;
+                }
 
                 Debug.Assert(!typeAsParameterizedType.RuntimeTypeHandle.IsNull());
                 Debug.Assert(!typeAsParameterizedType.ParameterType.RuntimeTypeHandle.IsNull());
@@ -1011,7 +1010,7 @@ namespace Internal.Runtime.TypeLoader
                 {
                     unsafe
                     {
-                        Debug.Assert(typeAsParameterizedType.RuntimeTypeHandle.ToEETypePtr()->IsByRefType);
+                        Debug.Assert(typeAsParameterizedType.RuntimeTypeHandle.ToEETypePtr()->IsByRef);
                     }
                     TypeSystemContext.ByRefTypesCache.AddOrGetExisting(typeAsParameterizedType.RuntimeTypeHandle);
                 }
@@ -1020,7 +1019,7 @@ namespace Internal.Runtime.TypeLoader
                     Debug.Assert(typeAsParameterizedType is PointerType);
                     unsafe
                     {
-                        Debug.Assert(typeAsParameterizedType.RuntimeTypeHandle.ToEETypePtr()->IsPointerType);
+                        Debug.Assert(typeAsParameterizedType.RuntimeTypeHandle.ToEETypePtr()->IsPointer);
                     }
                     TypeSystemContext.PointerTypesCache.AddOrGetExisting(typeAsParameterizedType.RuntimeTypeHandle);
                 }
@@ -1083,7 +1082,7 @@ namespace Internal.Runtime.TypeLoader
 
             // The first is a pointer that points to the TypeManager indirection cell.
             // The second is the offset into the native layout info blob in that TypeManager, where the native signature is encoded.
-            IntPtr** lazySignature = (IntPtr**)signature.ToPointer();
+            IntPtr** lazySignature = (IntPtr**)signature;
             typeManager = new TypeManagerHandle(lazySignature[0][0]);
             offset = checked((uint)new IntPtr(lazySignature[1]).ToInt32());
             reader = TypeLoaderEnvironment.GetNativeLayoutInfoReader(typeManager);
@@ -1102,7 +1101,7 @@ namespace Internal.Runtime.TypeLoader
             {
                 RuntimeTypeHandle declaringTypeHandle;
                 RuntimeTypeHandle[] genericMethodArgHandles;
-                bool success = TypeLoaderEnvironment.Instance.TryGetGenericMethodComponents(context, out declaringTypeHandle, out genericMethodArgHandles);
+                bool success = TypeLoaderEnvironment.TryGetGenericMethodComponents(context, out declaringTypeHandle, out genericMethodArgHandles);
                 Debug.Assert(success);
 
                 if (RuntimeAugments.IsGenericType(declaringTypeHandle))
@@ -1245,7 +1244,7 @@ namespace Internal.Runtime.TypeLoader
                 pointerTypeHandle = EETypeCreator.CreatePointerEEType((uint)pointerType.GetHashCode(), pointeeTypeHandle, pointerType);
                 unsafe
                 {
-                    Debug.Assert(pointerTypeHandle.ToEETypePtr()->IsPointerType);
+                    Debug.Assert(pointerTypeHandle.ToEETypePtr()->IsPointer);
                 }
                 TypeSystemContext.PointerTypesCache.AddOrGetExisting(pointerTypeHandle);
 
@@ -1265,7 +1264,7 @@ namespace Internal.Runtime.TypeLoader
                 byRefTypeHandle = EETypeCreator.CreateByRefEEType((uint)byRefType.GetHashCode(), pointeeTypeHandle, byRefType);
                 unsafe
                 {
-                    Debug.Assert(byRefTypeHandle.ToEETypePtr()->IsByRefType);
+                    Debug.Assert(byRefTypeHandle.ToEETypePtr()->IsByRef);
                 }
                 TypeSystemContext.ByRefTypesCache.AddOrGetExisting(byRefTypeHandle);
 
@@ -1273,6 +1272,30 @@ namespace Internal.Runtime.TypeLoader
                 TypeSystemContextFactory.Recycle(context);
             }
 
+            return true;
+        }
+
+        public static bool TryBuildFunctionPointerType(RuntimeTypeHandle returnTypeHandle, RuntimeTypeHandle[] parameterHandles, bool isUnmanaged, out RuntimeTypeHandle runtimeTypeHandle)
+        {
+            var key = new TypeSystemContext.FunctionPointerTypeKey(returnTypeHandle, parameterHandles, isUnmanaged);
+            if (!TypeSystemContext.FunctionPointerTypesCache.TryGetValue(key, out runtimeTypeHandle))
+            {
+                TypeSystemContext context = TypeSystemContextFactory.Create();
+                FunctionPointerType functionPointerType = context.GetFunctionPointerType(new MethodSignature(
+                    isUnmanaged ? MethodSignatureFlags.UnmanagedCallingConvention : 0,
+                    genericParameterCount: 0,
+                    context.ResolveRuntimeTypeHandle(returnTypeHandle),
+                    context.ResolveRuntimeTypeHandlesInternal(parameterHandles)));
+                runtimeTypeHandle = EETypeCreator.CreateFunctionPointerEEType((uint)functionPointerType.GetHashCode(), returnTypeHandle, parameterHandles, functionPointerType);
+                unsafe
+                {
+                    Debug.Assert(runtimeTypeHandle.ToEETypePtr()->IsFunctionPointer);
+                }
+                TypeSystemContext.FunctionPointerTypesCache.AddOrGetExisting(runtimeTypeHandle);
+
+                // Recycle the context only if we successfully built the type. The state may be partially initialized otherwise.
+                TypeSystemContextFactory.Recycle(context);
+            }
             return true;
         }
 
@@ -1292,45 +1315,6 @@ namespace Internal.Runtime.TypeLoader
                 methodDictionary = IntPtr.Zero;
                 return false;
             }
-        }
-
-        private void ResolveSingleCell_Worker(GenericDictionaryCell cell, out IntPtr fixupResolution)
-        {
-            cell.Prepare(this);
-
-            // Process the pending types
-            ProcessTypesNeedingPreparation();
-            FinishTypeAndMethodBuilding();
-
-            // At this stage the pointer we need is accessible via a call to Create on the prepared cell
-            fixupResolution = cell.Create(this);
-        }
-
-        private void ResolveMultipleCells_Worker(GenericDictionaryCell[] cells, out IntPtr[] fixups)
-        {
-            foreach (var cell in cells)
-            {
-                cell.Prepare(this);
-            }
-
-            // Process the pending types
-            ProcessTypesNeedingPreparation();
-            FinishTypeAndMethodBuilding();
-
-            // At this stage the pointer we need is accessible via a call to Create on the prepared cell
-            fixups = new IntPtr[cells.Length];
-            for (int i = 0; i < fixups.Length; i++)
-                fixups[i] = cells[i].Create(this);
-        }
-
-        internal static void ResolveSingleCell(GenericDictionaryCell cell, out IntPtr fixupResolution)
-        {
-            new TypeBuilder().ResolveSingleCell_Worker(cell, out fixupResolution);
-        }
-
-        public static void ResolveMultipleCells(GenericDictionaryCell [] cells, out IntPtr[] fixups)
-        {
-            new TypeBuilder().ResolveMultipleCells_Worker(cells, out fixups);
         }
 
         public static IntPtr BuildGenericLookupTarget(IntPtr typeContext, IntPtr signature, out IntPtr auxResult)

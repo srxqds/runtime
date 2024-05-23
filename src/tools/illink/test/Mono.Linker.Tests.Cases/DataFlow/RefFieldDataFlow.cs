@@ -2,26 +2,21 @@
 // Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
 using System;
-using System.Diagnostics.CodeAnalysis;
-using System.Runtime.CompilerServices;
 using Mono.Linker.Tests.Cases.Expectations.Assertions;
-using Mono.Linker.Tests.Cases.Expectations.Helpers;
 using DAM = System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembersAttribute;
 using DAMT = System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes;
 
 namespace Mono.Linker.Tests.Cases.DataFlow
 {
-	[IgnoreTestCase ("Ignore in NativeAOT, see https://github.com/dotnet/runtime/issues/82447", IgnoredBy = Tool.NativeAot)]
 	[SkipKeptItemsValidation]
 	[ExpectedNoWarnings]
 	class RefFieldDataFlow
 	{
 		[Kept]
-		// Bug for the IL2069's here: https://github.com/dotnet/linker/issues/2874
-		[ExpectedWarning ("IL2069", ProducedBy = Tool.Trimmer)]
-		[ExpectedWarning ("IL2069", ProducedBy = Tool.Trimmer)]
-		[ExpectedWarning ("IL2069", ProducedBy = Tool.Trimmer)]
-		[ExpectedWarning ("IL2069", ProducedBy = Tool.Trimmer)]
+		[UnexpectedWarning ("IL2069", Tool.Trimmer | Tool.NativeAot, "https://github.com/dotnet/runtime/issues/85464")]
+		[UnexpectedWarning ("IL2069", Tool.Trimmer | Tool.NativeAot, "https://github.com/dotnet/runtime/issues/85464")]
+		[UnexpectedWarning ("IL2069", Tool.Trimmer | Tool.NativeAot, "https://github.com/dotnet/runtime/issues/85464")]
+		[UnexpectedWarning ("IL2069", Tool.Trimmer | Tool.NativeAot, "https://github.com/dotnet/runtime/issues/85464")]
 		public static void Main ()
 		{
 			RefFieldWithMethods withMethods = new (ref fieldWithMethods);
@@ -100,11 +95,11 @@ namespace Mono.Linker.Tests.Cases.DataFlow
 			tmf = typeof (TF); // This is a hole that doesn't warn but assigns a misannotated value to target.T
 		}
 
-		[ExpectedWarning ("IL2089", "RefFieldWithMethods", "T", ProducedBy = Tool.Trimmer)]
-		[ExpectedWarning ("IL2089", "RefFieldWithFields", "T", ProducedBy = Tool.Trimmer)]
-		[ExpectedWarning ("IL2089", "RefFieldWithMethodsAndFields", "T", ProducedBy = Tool.Trimmer)]
-		[ExpectedWarning ("IL2089", "RefFieldWithMethodsAndFields", "T", ProducedBy = Tool.Trimmer)]
-		[ExpectedWarning ("IL2089", "RefFieldWithFields", "T", ProducedBy = Tool.Trimmer)]
+		[ExpectedWarning ("IL2089", "RefFieldWithMethods", "T", Tool.Trimmer | Tool.NativeAot, "")]
+		[ExpectedWarning ("IL2089", "RefFieldWithFields", "T", Tool.Trimmer | Tool.NativeAot, "")]
+		[ExpectedWarning ("IL2089", "RefFieldWithMethodsAndFields", "T", Tool.Trimmer | Tool.NativeAot, "")]
+		[ExpectedWarning ("IL2089", "RefFieldWithMethodsAndFields", "T", Tool.Trimmer | Tool.NativeAot, "")]
+		[ExpectedWarning ("IL2089", "RefFieldWithFields", "T", Tool.Trimmer | Tool.NativeAot, "")]
 		static void AssignRefLocals<
 			T,
 			[DAM (DAMT.PublicMethods)] TM,
@@ -178,15 +173,14 @@ namespace Mono.Linker.Tests.Cases.DataFlow
 		[ExpectedWarning ("IL2069", "RefFieldWithMethods.T", "paramWithFields")]
 		[ExpectedWarning ("IL2077", "paramWithMethodsAndFields", "RefFieldWithMethods.T")]
 		// ILLink doesn't recognize ldind.ref
-		// https://github.com/dotnet/linker/issues/2943
 		// IL2064's are bugs - shouldn't be unknown values
-		[ExpectedWarning ("IL2064", ProducedBy = Tool.Trimmer)]
-		[ExpectedWarning ("IL2064", ProducedBy = Tool.Trimmer)]
-		[ExpectedWarning ("IL2064", ProducedBy = Tool.Trimmer)]
-		[ExpectedWarning ("IL2064", ProducedBy = Tool.Trimmer)]
-		[ExpectedWarning ("IL2064", ProducedBy = Tool.Trimmer)]
-		[ExpectedWarning ("IL2069", "RefFieldWithMethods.T", "param", ProducedBy = Tool.Analyzer)]
-		[ExpectedWarning ("IL2069", "RefFieldWithMethods.T", "paramWithFields", ProducedBy = Tool.Analyzer)]
+		[UnexpectedWarning ("IL2064", Tool.Trimmer | Tool.NativeAot, "https://github.com/dotnet/runtime/issues/85465")]
+		[UnexpectedWarning ("IL2064", Tool.Trimmer | Tool.NativeAot, "https://github.com/dotnet/runtime/issues/85465")]
+		[UnexpectedWarning ("IL2064", Tool.Trimmer | Tool.NativeAot, "https://github.com/dotnet/runtime/issues/85465")]
+		[UnexpectedWarning ("IL2064", Tool.Trimmer | Tool.NativeAot, "https://github.com/dotnet/runtime/issues/85465")]
+		[UnexpectedWarning ("IL2064", Tool.Trimmer | Tool.NativeAot, "https://github.com/dotnet/runtime/issues/85465")]
+		[ExpectedWarning ("IL2069", "RefFieldWithMethods.T", "param", Tool.Analyzer, "https://github.com/dotnet/runtime/issues/85465")]
+		[ExpectedWarning ("IL2069", "RefFieldWithMethods.T", "paramWithFields", Tool.Analyzer, "https://github.com/dotnet/runtime/issues/85465")]
 		static void AssignRefParameters<
 			T,
 			[DAM (DAMT.PublicMethods)] TM,
@@ -237,15 +231,14 @@ namespace Mono.Linker.Tests.Cases.DataFlow
 
 		[ExpectedWarning ("IL2079", "RefFieldWithMethods.T", "RefFieldUnannotated.T")]
 		[ExpectedWarning ("IL2079", "RefFieldWithMethods.T", "RefFieldWithFields.T")]
-		[ExpectedWarning ("IL2079", "RefFieldWithMethods.T", "RefFieldUnannotated.T", ProducedBy = Tool.Analyzer)]
-		[ExpectedWarning ("IL2079", "RefFieldWithMethods.T", "RefFieldWithFields.T", ProducedBy = Tool.Analyzer)]
+		[ExpectedWarning ("IL2079", "RefFieldWithMethods.T", "RefFieldUnannotated.T", Tool.Analyzer, "https://github.com/dotnet/runtime/issues/85465")]
+		[ExpectedWarning ("IL2079", "RefFieldWithMethods.T", "RefFieldWithFields.T", Tool.Analyzer, "https://github.com/dotnet/runtime/issues/85465")]
 		// IL2064's are bugs - shouldn't be unknown values
-		// https://github.com/dotnet/linker/issues/2943
-		[ExpectedWarning ("IL2064", "RefFieldWithMethods.T", ProducedBy = Tool.Trimmer)] // target.T = unannotated.T;
-		[ExpectedWarning ("IL2064", "RefFieldWithMethods.T", ProducedBy = Tool.Trimmer)] // target.T = withMethods.T;
-		[ExpectedWarning ("IL2064", "RefFieldWithMethods.T", ProducedBy = Tool.Trimmer)] // target.T = withFields.T;
-		[ExpectedWarning ("IL2064", "RefFieldWithMethods.T", ProducedBy = Tool.Trimmer)] // target.T = withMethodsAndFields.T;
-		[ExpectedWarning ("IL2064", "RefFieldWithMethods.T", ProducedBy = Tool.Trimmer)] // target.T = withMethodsAndFields.T;
+		[UnexpectedWarning ("IL2064", "RefFieldWithMethods.T", Tool.Trimmer | Tool.NativeAot, "https://github.com/dotnet/runtime/issues/85465")] // target.T = unannotated.T;
+		[UnexpectedWarning ("IL2064", "RefFieldWithMethods.T", Tool.Trimmer | Tool.NativeAot, "https://github.com/dotnet/runtime/issues/85465")] // target.T = withMethods.T;
+		[UnexpectedWarning ("IL2064", "RefFieldWithMethods.T", Tool.Trimmer | Tool.NativeAot, "https://github.com/dotnet/runtime/issues/85465")] // target.T = withFields.T;
+		[UnexpectedWarning ("IL2064", "RefFieldWithMethods.T", Tool.Trimmer | Tool.NativeAot, "https://github.com/dotnet/runtime/issues/85465")] // target.T = withMethodsAndFields.T;
+		[UnexpectedWarning ("IL2064", "RefFieldWithMethods.T", Tool.Trimmer | Tool.NativeAot, "https://github.com/dotnet/runtime/issues/85465")] // target.T = withMethodsAndFields.T;
 		static void AssignRefFields (
 			RefFieldWithMethods target,
 			RefFieldUnannotated unannotated,
@@ -269,14 +262,13 @@ namespace Mono.Linker.Tests.Cases.DataFlow
 		[ExpectedWarning ("IL2074", "RefFieldWithMethods.T", "GetRefWithFields")]
 		[ExpectedWarning ("IL2074", "RefFieldWithMethods.T", "GetRefUnannotated")]
 		[ExpectedWarning ("IL2074", "RefFieldWithMethods.T", "GetRefWithFields")]
-		[ExpectedWarning ("IL2074", "RefFieldWithMethods.T", "GetRefUnannotated", ProducedBy = Tool.Analyzer)]
-		[ExpectedWarning ("IL2074", "RefFieldWithMethods.T", "GetRefWithFields", ProducedBy = Tool.Analyzer)]
+		[ExpectedWarning ("IL2074", "RefFieldWithMethods.T", "GetRefUnannotated", Tool.Analyzer, "https://github.com/dotnet/runtime/issues/85465")]
+		[ExpectedWarning ("IL2074", "RefFieldWithMethods.T", "GetRefWithFields", Tool.Analyzer, "https://github.com/dotnet/runtime/issues/85465")]
 		// IL2064's are bugs - shouldn't be unknown values
-		// https://github.com/dotnet/linker/issues/2943
-		[ExpectedWarning ("IL2064", "RefFieldWithMethods.T", ProducedBy = Tool.Trimmer)] // target.T = t;
-		[ExpectedWarning ("IL2064", "RefFieldWithMethods.T", ProducedBy = Tool.Trimmer)] // target.T = t;
-		[ExpectedWarning ("IL2064", "RefFieldWithMethods.T", ProducedBy = Tool.Trimmer)] // target.T = t;
-		[ExpectedWarning ("IL2064", "RefFieldWithMethods.T", ProducedBy = Tool.Trimmer)] // target.T = t;
+		[UnexpectedWarning ("IL2064", "RefFieldWithMethods.T", Tool.Trimmer | Tool.NativeAot, "https://github.com/dotnet/runtime/issues/85465")] // target.T = t;
+		[UnexpectedWarning ("IL2064", "RefFieldWithMethods.T", Tool.Trimmer | Tool.NativeAot, "https://github.com/dotnet/runtime/issues/85465")] // target.T = t;
+		[UnexpectedWarning ("IL2064", "RefFieldWithMethods.T", Tool.Trimmer | Tool.NativeAot, "https://github.com/dotnet/runtime/issues/85465")] // target.T = t;
+		[UnexpectedWarning ("IL2064", "RefFieldWithMethods.T", Tool.Trimmer | Tool.NativeAot, "https://github.com/dotnet/runtime/issues/85465")] // target.T = t;
 		static void AssignRefReturns<
 			T,
 			[DAM (DAMT.PublicMethods)] TM,
@@ -352,26 +344,25 @@ namespace Mono.Linker.Tests.Cases.DataFlow
 		}
 
 		// target.T = x.T
-		[ExpectedWarning ("IL2074", "RefFieldWithMethods.T", "RefPropUnannotated.T", ProducedBy = Tool.Analyzer)]
-		[ExpectedWarning ("IL2074", "RefFieldWithMethods.T", "RefPropWithFields.T", ProducedBy = Tool.Analyzer)]
+		[ExpectedWarning ("IL2074", "RefFieldWithMethods.T", "RefPropUnannotated.T", Tool.Analyzer, "https://github.com/dotnet/runtime/issues/85465")]
+		[ExpectedWarning ("IL2074", "RefFieldWithMethods.T", "RefPropWithFields.T", Tool.Analyzer, "https://github.com/dotnet/runtime/issues/85465")]
 		// target.T = t;
-		[ExpectedWarning ("IL2074", "RefFieldWithMethods.T", "RefPropUnannotated.T", ProducedBy = Tool.Analyzer)]
-		[ExpectedWarning ("IL2074", "RefFieldWithMethods.T", "RefPropWithFields.T", ProducedBy = Tool.Analyzer)]
+		[ExpectedWarning ("IL2074", "RefFieldWithMethods.T", "RefPropUnannotated.T", Tool.Analyzer, "https://github.com/dotnet/runtime/issues/85465")]
+		[ExpectedWarning ("IL2074", "RefFieldWithMethods.T", "RefPropWithFields.T", Tool.Analyzer, "https://github.com/dotnet/runtime/issues/85465")]
 		// target.T = ref x.T
 		[ExpectedWarning ("IL2074", "RefFieldWithMethods.T", "RefPropUnannotated.T")]
 		[ExpectedWarning ("IL2074", "RefFieldWithMethods.T", "RefPropWithFields.T")]
 		// ref Type t = ref x.T; target.T = t;
 		// IL2064's are bugs - shouldn't be unknown values
-		// https://github.com/dotnet/linker/issues/2943
-		[ExpectedWarning ("IL2064", "RefFieldWithMethods.T", ProducedBy = Tool.Trimmer)] // target.T = unannotated.T;
-		[ExpectedWarning ("IL2064", "RefFieldWithMethods.T", ProducedBy = Tool.Trimmer)] // target.T = withMethods.T;
-		[ExpectedWarning ("IL2064", "RefFieldWithMethods.T", ProducedBy = Tool.Trimmer)] // target.T = withFields.T;
-		[ExpectedWarning ("IL2064", "RefFieldWithMethods.T", ProducedBy = Tool.Trimmer)] // target.T = withMethodsAndFieldswithMtho.T;
-		[ExpectedWarning ("IL2064", "RefFieldWithMethods.T", ProducedBy = Tool.Trimmer)] // target.T = withMethods.T;
-		[ExpectedWarning ("IL2064", "RefFieldWithMethods.T", ProducedBy = Tool.Trimmer)] // target.T = t;
-		[ExpectedWarning ("IL2064", "RefFieldWithMethods.T", ProducedBy = Tool.Trimmer)] // target.T = t;
-		[ExpectedWarning ("IL2064", "RefFieldWithMethods.T", ProducedBy = Tool.Trimmer)] // target.T = t;
-		[ExpectedWarning ("IL2064", "RefFieldWithMethods.T", ProducedBy = Tool.Trimmer)] // target.T = t;
+		[UnexpectedWarning ("IL2064", "RefFieldWithMethods.T", Tool.Trimmer | Tool.NativeAot, "https://github.com/dotnet/runtime/issues/85465")] // target.T = unannotated.T;
+		[UnexpectedWarning ("IL2064", "RefFieldWithMethods.T", Tool.Trimmer | Tool.NativeAot, "https://github.com/dotnet/runtime/issues/85465")] // target.T = withMethods.T;
+		[UnexpectedWarning ("IL2064", "RefFieldWithMethods.T", Tool.Trimmer | Tool.NativeAot, "https://github.com/dotnet/runtime/issues/85465")] // target.T = withFields.T;
+		[UnexpectedWarning ("IL2064", "RefFieldWithMethods.T", Tool.Trimmer | Tool.NativeAot, "https://github.com/dotnet/runtime/issues/85465")] // target.T = withMethodsAndFieldswithMtho.T;
+		[UnexpectedWarning ("IL2064", "RefFieldWithMethods.T", Tool.Trimmer | Tool.NativeAot, "https://github.com/dotnet/runtime/issues/85465")] // target.T = withMethods.T;
+		[UnexpectedWarning ("IL2064", "RefFieldWithMethods.T", Tool.Trimmer | Tool.NativeAot, "https://github.com/dotnet/runtime/issues/85465")] // target.T = t;
+		[UnexpectedWarning ("IL2064", "RefFieldWithMethods.T", Tool.Trimmer | Tool.NativeAot, "https://github.com/dotnet/runtime/issues/85465")] // target.T = t;
+		[UnexpectedWarning ("IL2064", "RefFieldWithMethods.T", Tool.Trimmer | Tool.NativeAot, "https://github.com/dotnet/runtime/issues/85465")] // target.T = t;
+		[UnexpectedWarning ("IL2064", "RefFieldWithMethods.T", Tool.Trimmer | Tool.NativeAot, "https://github.com/dotnet/runtime/issues/85465")] // target.T = t;
 		static void AssignRefProperties (RefFieldWithMethods target,
 			RefPropUnannotated unannotated = null,
 			RefPropWithMethods withMethods = null,
@@ -520,11 +511,11 @@ namespace Mono.Linker.Tests.Cases.DataFlow
 		ref struct RefFieldWithMethods
 		{
 			[Kept]
-			[DynamicallyAccessedMembers (DAMT.PublicMethods)]
+			[DAM (DAMT.PublicMethods)]
 			public ref Type T;
 
 			[Kept]
-			public RefFieldWithMethods ([DynamicallyAccessedMembers (DAMT.PublicMethods)] ref Type t)
+			public RefFieldWithMethods ([DAM (DAMT.PublicMethods)] ref Type t)
 			{
 				T = ref t;
 			}
@@ -534,11 +525,11 @@ namespace Mono.Linker.Tests.Cases.DataFlow
 		ref struct RefFieldWithFields
 		{
 			[Kept]
-			[DynamicallyAccessedMembers (DAMT.PublicFields)]
+			[DAM (DAMT.PublicFields)]
 			public ref Type T;
 
 			[Kept]
-			public RefFieldWithFields ([DynamicallyAccessedMembers (DAMT.PublicFields)] ref Type t)
+			public RefFieldWithFields ([DAM (DAMT.PublicFields)] ref Type t)
 			{
 				T = ref t;
 			}
@@ -548,11 +539,11 @@ namespace Mono.Linker.Tests.Cases.DataFlow
 		ref struct RefFieldWithMethodsAndFields
 		{
 			[Kept]
-			[DynamicallyAccessedMembers (DAMT.PublicFields | DAMT.PublicMethods)]
+			[DAM (DAMT.PublicFields | DAMT.PublicMethods)]
 			public ref Type T;
 
 			[Kept]
-			public RefFieldWithMethodsAndFields ([DynamicallyAccessedMembers (DAMT.PublicFields | DAMT.PublicMethods)] ref Type t)
+			public RefFieldWithMethodsAndFields ([DAM (DAMT.PublicFields | DAMT.PublicMethods)] ref Type t)
 			{
 				T = ref t;
 			}

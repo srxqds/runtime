@@ -4,7 +4,9 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Net;
 using System.Net.Security;
@@ -19,8 +21,6 @@ internal static partial class Interop
 {
     internal static partial class OpenSsl
     {
-        private const string DisableTlsResumeCtxSwitch = "System.Net.Security.DisableTlsResume";
-        private const string DisableTlsResumeEnvironmentVariable = "DOTNET_SYSTEM_NET_SECURITY_DISABLETLSRESUME";
         private const string TlsCacheSizeCtxName = "System.Net.Security.TlsCacheSize";
         private const string TlsCacheSizeEnvironmentVariable = "DOTNET_SYSTEM_NET_SECURITY_TLSCACHESIZE";
         private const SslProtocols FakeAlpnSslProtocol = (SslProtocols)1;   // used to distinguish server sessions with ALPN
@@ -52,47 +52,13 @@ internal static partial class Interop
 
         private static readonly int s_cacheSize = GetCacheSize();
 
-        private static volatile int s_disableTlsResume = -1;
-
-        private static bool DisableTlsResume
-        {
-            get
-            {
-                int disableTlsResume = s_disableTlsResume;
-                if (disableTlsResume != -1)
-                {
-                    return disableTlsResume != 0;
-                }
-
-                // First check for the AppContext switch, giving it priority over the environment variable.
-                if (AppContext.TryGetSwitch(DisableTlsResumeCtxSwitch, out bool value))
-                {
-                    s_disableTlsResume = value ? 1 : 0;
-                }
-                else
-                {
-                    // AppContext switch wasn't used. Check the environment variable.
-                    s_disableTlsResume =
-                        Environment.GetEnvironmentVariable(DisableTlsResumeEnvironmentVariable) is string envVar &&
-                        (envVar == "1" || envVar.Equals("true", StringComparison.OrdinalIgnoreCase)) ? 1 : 0;
-                }
-
-                return s_disableTlsResume != 0;
-            }
-        }
-
         private static int GetCacheSize()
         {
-            int cacheSize = -1;
             string? value = AppContext.GetData(TlsCacheSizeCtxName) as string ?? Environment.GetEnvironmentVariable(TlsCacheSizeEnvironmentVariable);
-            try
+            if (!int.TryParse(value, CultureInfo.InvariantCulture, out int cacheSize))
             {
-                if (value != null)
-                {
-                    cacheSize = int.Parse(value);
-                }
+                cacheSize = -1;
             }
-            catch { };
 
             return cacheSize;
         }
@@ -226,7 +192,7 @@ internal static partial class Interop
                 {
                     SetSslCertificate(sslCtx, sslAuthenticationOptions.CertificateContext.CertificateHandle, sslAuthenticationOptions.CertificateContext.KeyHandle);
 
-                    if (sslAuthenticationOptions.CertificateContext.IntermediateCertificates.Length > 0)
+                    if (sslAuthenticationOptions.CertificateContext.IntermediateCertificates.Count > 0)
                     {
                         if (!Ssl.AddExtraChainCertificates(sslCtx, sslAuthenticationOptions.CertificateContext.IntermediateCertificates))
                         {
@@ -238,6 +204,10 @@ internal static partial class Interop
                     {
                         Ssl.SslCtxSetDefaultOcspCallback(sslCtx);
                     }
+                }
+                if (SslKeyLogger.IsEnabled)
+                {
+                    Ssl.SslCtxSetKeylogCallback(sslCtx, &KeyLogCallback);
                 }
             }
             catch
@@ -274,7 +244,7 @@ internal static partial class Interop
                 throw CreateSslException(SR.net_ssl_use_private_key_failed);
             }
 
-            if (sslAuthenticationOptions.CertificateContext.IntermediateCertificates.Length > 0)
+            if (sslAuthenticationOptions.CertificateContext.IntermediateCertificates.Count > 0)
             {
                 if (!Ssl.AddExtraChainCertificates(ssl, sslAuthenticationOptions.CertificateContext.IntermediateCertificates))
                 {
@@ -291,7 +261,7 @@ internal static partial class Interop
             SafeSslContextHandle? newCtxHandle = null;
             SslProtocols protocols = CalculateEffectiveProtocols(sslAuthenticationOptions);
             bool hasAlpn = sslAuthenticationOptions.ApplicationProtocols != null && sslAuthenticationOptions.ApplicationProtocols.Count != 0;
-            bool cacheSslContext = !DisableTlsResume && sslAuthenticationOptions.EncryptionPolicy == EncryptionPolicy.RequireEncryption && sslAuthenticationOptions.CipherSuitesPolicy == null;
+            bool cacheSslContext = sslAuthenticationOptions.AllowTlsResume && !SslStream.DisableTlsResume && sslAuthenticationOptions.EncryptionPolicy == EncryptionPolicy.RequireEncryption && sslAuthenticationOptions.CipherSuitesPolicy == null;
 
             if (cacheSslContext)
             {
@@ -383,7 +353,7 @@ internal static partial class Interop
 
                 if (sslAuthenticationOptions.IsClient)
                 {
-                    if (!string.IsNullOrEmpty(sslAuthenticationOptions.TargetHost))
+                    if (!string.IsNullOrEmpty(sslAuthenticationOptions.TargetHost) && !TargetHostNameHelper.IsValidAddress(sslAuthenticationOptions.TargetHost))
                     {
                         // Similar to windows behavior, set SNI on openssl by default for client context, ignore errors.
                         if (!Ssl.SslSetTlsExtHostName(sslHandle, sslAuthenticationOptions.TargetHost))
@@ -484,10 +454,9 @@ internal static partial class Interop
             return new SecurityStatusPal(SecurityStatusPalErrorCode.OK);
         }
 
-        internal static SecurityStatusPalErrorCode DoSslHandshake(SafeSslHandle context, ReadOnlySpan<byte> input, out byte[]? sendBuf, out int sendCount)
+        internal static SecurityStatusPalErrorCode DoSslHandshake(SafeSslHandle context, ReadOnlySpan<byte> input, ref ProtocolToken token)
         {
-            sendBuf = null;
-            sendCount = 0;
+            token.Size = 0;
             Exception? handshakeException = null;
 
             if (input.Length > 0)
@@ -517,14 +486,13 @@ internal static partial class Interop
                 }
             }
 
-            sendCount = Crypto.BioCtrlPending(context.OutputBio!);
+            int sendCount = Crypto.BioCtrlPending(context.OutputBio!);
             if (sendCount > 0)
             {
-                sendBuf = new byte[sendCount];
-
+                token.EnsureAvailableSpace(sendCount);
                 try
                 {
-                    sendCount = BioRead(context.OutputBio!, sendBuf, sendCount);
+                    sendCount = BioRead(context.OutputBio!, token.AvailableSpan, sendCount);
                 }
                 catch (Exception) when (handshakeException != null)
                 {
@@ -536,11 +504,12 @@ internal static partial class Interop
                     {
                         // Make sure we clear out the error that is stored in the queue
                         Crypto.ErrClearError();
-                        sendBuf = null;
                         sendCount = 0;
                     }
                 }
             }
+
+            token.Size = sendCount;
 
             if (handshakeException != null)
             {
@@ -556,14 +525,13 @@ internal static partial class Interop
             return stateOk ? SecurityStatusPalErrorCode.OK : SecurityStatusPalErrorCode.ContinueNeeded;
         }
 
-        internal static int Encrypt(SafeSslHandle context, ReadOnlySpan<byte> input, ref byte[] output, out Ssl.SslErrorCode errorCode)
+        internal static Ssl.SslErrorCode Encrypt(SafeSslHandle context, ReadOnlySpan<byte> input, ref ProtocolToken outToken)
         {
-            int retVal = Ssl.SslWrite(context, ref MemoryMarshal.GetReference(input), input.Length, out errorCode);
+            int retVal = Ssl.SslWrite(context, ref MemoryMarshal.GetReference(input), input.Length, out Ssl.SslErrorCode errorCode);
 
             if (retVal != input.Length)
             {
-                retVal = 0;
-
+                outToken.Size = 0;
                 switch (errorCode)
                 {
                     // indicate end-of-file
@@ -578,22 +546,22 @@ internal static partial class Interop
             else
             {
                 int capacityNeeded = Crypto.BioCtrlPending(context.OutputBio!);
-
-                if (output == null || output.Length < capacityNeeded)
-                {
-                    output = new byte[capacityNeeded];
-                }
-
-                retVal = BioRead(context.OutputBio!, output, capacityNeeded);
+                outToken.EnsureAvailableSpace(capacityNeeded);
+                retVal = BioRead(context.OutputBio!, outToken.AvailableSpan, capacityNeeded);
 
                 if (retVal <= 0)
                 {
                     // Make sure we clear out the error that is stored in the queue
                     Crypto.ErrClearError();
+                    outToken.Size = 0;
+                }
+                else
+                {
+                    outToken.Size = retVal;
                 }
             }
 
-            return retVal;
+            return errorCode;
         }
 
         internal static int Decrypt(SafeSslHandle context, Span<byte> buffer, out Ssl.SslErrorCode errorCode)
@@ -686,9 +654,6 @@ internal static partial class Interop
             {
                 return Ssl.SSL_TLSEXT_ERR_ALERT_FATAL;
             }
-
-            // reset application data to avoid dangling pointer.
-            Ssl.SslSetData(ssl, IntPtr.Zero);
 
             GCHandle protocolHandle = GCHandle.FromIntPtr(sslData);
             if (!(protocolHandle.Target is List<SslApplicationProtocol> protocolList))
@@ -783,16 +748,22 @@ internal static partial class Interop
 
             IntPtr name = Ssl.SessionGetHostname(session);
             Debug.Assert(name != IntPtr.Zero);
-            ctxHandle.RemoveSession(name);
+            ctxHandle.RemoveSession(name, session);
         }
 
-        private static int BioRead(SafeBioHandle bio, byte[] buffer, int count)
+        [UnmanagedCallersOnly]
+        private static unsafe void KeyLogCallback(IntPtr ssl, char* line)
         {
-            Debug.Assert(buffer != null);
+            ReadOnlySpan<byte> data = MemoryMarshal.CreateReadOnlySpanFromNullTerminated((byte*)line);
+            SslKeyLogger.WriteLineRaw(data);
+        }
+
+        private static int BioRead(SafeBioHandle bio, Span<byte> buffer, int count)
+        {
             Debug.Assert(count >= 0);
             Debug.Assert(buffer.Length >= count);
 
-            int bytes = Crypto.BioRead(bio, buffer, count);
+            int bytes = Crypto.BioRead(bio, buffer);
             if (bytes != count)
             {
                 throw CreateSslException(SR.net_ssl_read_bio_failed_error);

@@ -4,13 +4,13 @@
 using System;
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Collections.Generic;
 using System.IO;
 using System.Net.Security;
 using System.Net.Test.Common;
 using System.Security.Principal;
 using System.Text;
 using System.Threading.Tasks;
-using Microsoft.DotNet.XUnitExtensions;
 using Xunit;
 
 namespace System.Net.Security.Tests
@@ -42,7 +42,7 @@ namespace System.Net.Security.Tests
         [ConditionalFact(nameof(IsNtlmAvailable))]
         public void RemoteIdentity_ThrowsOnDisposed()
         {
-            FakeNtlmServer fakeNtlmServer = new FakeNtlmServer(s_testCredentialRight);
+            using FakeNtlmServer fakeNtlmServer = new FakeNtlmServer(s_testCredentialRight);
             NegotiateAuthentication negotiateAuthentication = new NegotiateAuthentication(
                 new NegotiateAuthenticationClientOptions
                 {
@@ -87,10 +87,6 @@ namespace System.Net.Security.Tests
         [ConditionalFact(nameof(IsNtlmUnavailable))]
         public void Package_Unsupported_NTLM()
         {
-            if (PlatformDetection.IsRedHatFamily7)
-            {
-                throw new SkipTestException("https://github.com/dotnet/runtime/issues/83540");
-            }
             NegotiateAuthenticationClientOptions clientOptions = new NegotiateAuthenticationClientOptions { Package = "NTLM", Credential = s_testCredentialRight, TargetName = "HTTP/foo" };
             NegotiateAuthentication negotiateAuthentication = new NegotiateAuthentication(clientOptions);
             NegotiateAuthenticationStatusCode statusCode;
@@ -99,11 +95,23 @@ namespace System.Net.Security.Tests
         }
 
         [Fact]
+        [SkipOnPlatform(TestPlatforms.Windows, "The test is specific to GSSAPI / Managed implementations of NegotiateAuthentication")]
+        public void DefaultNetworkCredentials_NTLM_DoesNotThrow()
+        {
+            NegotiateAuthenticationClientOptions clientOptions = new NegotiateAuthenticationClientOptions { Package = "NTLM", Credential = CredentialCache.DefaultNetworkCredentials, TargetName = "HTTP/foo" };
+            // Assert.DoesNotThrow
+            NegotiateAuthentication negotiateAuthentication = new NegotiateAuthentication(clientOptions);
+            NegotiateAuthenticationStatusCode statusCode;
+            negotiateAuthentication.GetOutgoingBlob((byte[]?)null, out statusCode);
+            Assert.Equal(NegotiateAuthenticationStatusCode.UnknownCredentials, statusCode);
+        }
+
+        [Fact]
         public void NtlmProtocolExampleTest()
         {
             // Mirrors the NTLMv2 example in the NTLM specification:
             NetworkCredential credential = new NetworkCredential("User", "Password", "Domain");
-            FakeNtlmServer fakeNtlmServer = new FakeNtlmServer(credential);
+            using FakeNtlmServer fakeNtlmServer = new FakeNtlmServer(credential);
             fakeNtlmServer.SendTimestamp = false;
             fakeNtlmServer.TargetIsServer = true;
             fakeNtlmServer.PreferUnicode = false;
@@ -153,15 +161,23 @@ namespace System.Net.Security.Tests
             Assert.False(fakeNtlmServer.IsMICPresent);
         }
 
-        [ConditionalFact(nameof(IsNtlmAvailable))]
-        public void NtlmCorrectExchangeTest()
+        public static IEnumerable<object[]> TestCredentials()
         {
-            FakeNtlmServer fakeNtlmServer = new FakeNtlmServer(s_testCredentialRight);
+            yield return new object[] { new NetworkCredential("rightusername", "rightpassword") };
+            yield return new object[] { new NetworkCredential("rightusername", "rightpassword", "rightdomain") };
+            yield return new object[] { new NetworkCredential("rightusername@rightdomain.com", "rightpassword") };
+        }
+
+        [ConditionalTheory(nameof(IsNtlmAvailable))]
+        [MemberData(nameof(TestCredentials))]
+        public void NtlmCorrectExchangeTest(NetworkCredential credential)
+        {
+            using FakeNtlmServer fakeNtlmServer = new FakeNtlmServer(credential);
             NegotiateAuthentication ntAuth = new NegotiateAuthentication(
                 new NegotiateAuthenticationClientOptions
                 {
                     Package = "NTLM",
-                    Credential = s_testCredentialRight,
+                    Credential = credential,
                     TargetName = "HTTP/foo",
                     RequiredProtectionLevel = ProtectionLevel.Sign
                 });
@@ -180,7 +196,7 @@ namespace System.Net.Security.Tests
         [ConditionalFact(nameof(IsNtlmAvailable))]
         public void NtlmIncorrectExchangeTest()
         {
-            FakeNtlmServer fakeNtlmServer = new FakeNtlmServer(s_testCredentialRight);
+            using FakeNtlmServer fakeNtlmServer = new FakeNtlmServer(s_testCredentialRight);
             NegotiateAuthentication ntAuth = new NegotiateAuthentication(
                 new NegotiateAuthenticationClientOptions
                 {
@@ -196,10 +212,45 @@ namespace System.Net.Security.Tests
         }
 
         [ConditionalFact(nameof(IsNtlmAvailable))]
-        [ActiveIssue("https://github.com/dotnet/runtime/issues/65678", TestPlatforms.OSX | TestPlatforms.iOS | TestPlatforms.MacCatalyst)]
+        public void NtlmEncryptionTest()
+        {
+            using FakeNtlmServer fakeNtlmServer = new FakeNtlmServer(s_testCredentialRight);
+
+            NegotiateAuthentication ntAuth = new NegotiateAuthentication(
+                new NegotiateAuthenticationClientOptions
+                {
+                    Package = "NTLM",
+                    Credential = s_testCredentialRight,
+                    TargetName = "HTTP/foo",
+                    RequiredProtectionLevel = ProtectionLevel.EncryptAndSign
+                });
+
+            NegotiateAuthenticationStatusCode statusCode;
+            byte[]? negotiateBlob = ntAuth.GetOutgoingBlob((byte[])null, out statusCode);
+            Assert.Equal(NegotiateAuthenticationStatusCode.ContinueNeeded, statusCode);
+            Assert.NotNull(negotiateBlob);
+
+            byte[]? challengeBlob = fakeNtlmServer.GetOutgoingBlob(negotiateBlob);
+            Assert.NotNull(challengeBlob);
+            // Validate that the client sent NegotiateSeal flag
+            Assert.Equal(FakeNtlmServer.Flags.NegotiateSeal, (fakeNtlmServer.InitialClientFlags & FakeNtlmServer.Flags.NegotiateSeal));
+
+            byte[]? authenticateBlob = ntAuth.GetOutgoingBlob(challengeBlob, out statusCode);
+            Assert.Equal(NegotiateAuthenticationStatusCode.Completed, statusCode);
+            Assert.NotNull(authenticateBlob);
+
+            byte[]? empty = fakeNtlmServer.GetOutgoingBlob(authenticateBlob);
+            Assert.Null(empty);
+            Assert.True(fakeNtlmServer.IsAuthenticated);
+
+            // Validate that the NegotiateSeal flag survived the full exchange
+            Assert.Equal(FakeNtlmServer.Flags.NegotiateSeal, (fakeNtlmServer.NegotiatedFlags & FakeNtlmServer.Flags.NegotiateSeal));
+        }
+
+        [ConditionalFact(nameof(IsNtlmAvailable))]
         public void NtlmSignatureTest()
         {
-            FakeNtlmServer fakeNtlmServer = new FakeNtlmServer(s_testCredentialRight);
+            using FakeNtlmServer fakeNtlmServer = new FakeNtlmServer(s_testCredentialRight);
             NegotiateAuthentication ntAuth = new NegotiateAuthentication(
                 new NegotiateAuthenticationClientOptions
                 {
@@ -233,6 +284,43 @@ namespace System.Net.Security.Tests
             Assert.Equal(s_Hello, output.WrittenSpan.ToArray());
         }
 
+        [ConditionalFact(nameof(IsNtlmAvailable))]
+        public void NtlmIntegrityCheckTest()
+        {
+            using FakeNtlmServer fakeNtlmServer = new FakeNtlmServer(s_testCredentialRight);
+            NegotiateAuthentication ntAuth = new NegotiateAuthentication(
+                new NegotiateAuthenticationClientOptions
+                {
+                    Package = "NTLM",
+                    Credential = s_testCredentialRight,
+                    TargetName = "HTTP/foo",
+                    RequiredProtectionLevel = ProtectionLevel.EncryptAndSign
+                });
+
+            DoNtlmExchange(fakeNtlmServer, ntAuth);
+
+            Assert.True(fakeNtlmServer.IsAuthenticated);
+
+            ArrayBufferWriter<byte> output = new ArrayBufferWriter<byte>();
+            for (int i = 0; i < 3; i++)
+            {
+                // Test ComputeIntegrityCheck on client side and decoding it on server side
+                ntAuth.ComputeIntegrityCheck(s_Hello, output);
+                Assert.Equal(16, output.WrittenCount);
+                // Verify the signature computation
+                fakeNtlmServer.VerifyMIC(s_Hello, output.WrittenSpan);
+                // Prepare buffer for reuse
+                output.Clear();
+            }
+
+            Span<byte> signature = stackalloc byte[16];
+            for (int i = 0; i < 3; i++)
+            {
+                fakeNtlmServer.GetMIC(s_Hello, signature);
+                Assert.True(ntAuth.VerifyIntegrityCheck(s_Hello, signature));
+            }
+        }
+
         private void DoNtlmExchange(FakeNtlmServer fakeNtlmServer, NegotiateAuthentication ntAuth)
         {
             NegotiateAuthenticationStatusCode statusCode;
@@ -255,7 +343,7 @@ namespace System.Net.Security.Tests
         public void NegotiateCorrectExchangeTest(bool requestMIC, bool requestConfidentiality)
         {
             // Older versions of gss-ntlmssp on Linux generate MIC at incorrect offset unless ForceNegotiateVersion is specified
-            FakeNtlmServer fakeNtlmServer = new FakeNtlmServer(s_testCredentialRight) { ForceNegotiateVersion = true };
+            using FakeNtlmServer fakeNtlmServer = new FakeNtlmServer(s_testCredentialRight) { ForceNegotiateVersion = true };
             FakeNegotiateServer fakeNegotiateServer = new FakeNegotiateServer(fakeNtlmServer) { RequestMIC = requestMIC };
             NegotiateAuthentication ntAuth = new NegotiateAuthentication(
                 new NegotiateAuthenticationClientOptions

@@ -47,7 +47,7 @@ namespace System.Collections.Tests
         public static IEnumerable<object[]> ListTestData() =>
             GetEnumerableTestData(EnumerableType.List);
 
-        private static IEnumerable<object[]> GetEnumerableTestData(EnumerableType enumerableType)
+        protected static IEnumerable<object[]> GetEnumerableTestData(EnumerableType enumerableType)
         {
             foreach (object[] collectionSizeArray in ValidCollectionSizes())
             {
@@ -254,6 +254,24 @@ namespace System.Collections.Tests
 
             return set;
         }
+
+#if NET
+        /// <summary>
+        /// Create a HashSet with a specific initial capacity and fill it with a specific number of elements.
+        /// </summary>
+        protected HashSet<T> CreateHashSetWithCapacity(int count, int capacity)
+        {
+            var set = new HashSet<T>(capacity, GetIEqualityComparer());
+            int seed = 528;
+
+            for (int i = 0; i < count; i++)
+            {
+                while (!set.Add(CreateT(seed++)));
+            }
+
+            return set;
+        }
+#endif
 
         /// <summary>
         /// Helper function to create an SortedSet fulfilling the given specific parameters. The function will

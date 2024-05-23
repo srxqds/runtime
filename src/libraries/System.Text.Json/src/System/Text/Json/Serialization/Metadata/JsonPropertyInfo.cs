@@ -5,7 +5,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
-using System.Text.Json.Reflection;
+using System.Threading;
 
 namespace System.Text.Json.Serialization.Metadata
 {
@@ -17,7 +17,7 @@ namespace System.Text.Json.Serialization.Metadata
     {
         internal static readonly JsonPropertyInfo s_missingProperty = GetPropertyPlaceholder();
 
-        internal JsonTypeInfo? ParentTypeInfo { get; private set; }
+        internal JsonTypeInfo? DeclaringTypeInfo { get; private set; }
 
         /// <summary>
         /// Converter after applying CustomConverter (i.e. JsonConverterAttribute)
@@ -163,19 +163,156 @@ namespace System.Text.Json.Serialization.Metadata
         /// </remarks>
         public ICustomAttributeProvider? AttributeProvider
         {
-            get => _attributeProvider;
+            get
+            {
+                ICustomAttributeProvider attributeProvider = _attributeProvider ?? InitializeAttributeProvider();
+                return ReferenceEquals(attributeProvider, s_nullAttributeProvider) ? null : attributeProvider;
+            }
             set
             {
                 VerifyMutable();
 
-                _attributeProvider = value;
+                _attributeProvider = value ?? s_nullAttributeProvider;
             }
         }
 
+        // Because the getter can initialize its own backing field, we want to avoid races between the getter and setter.
+        // This is done using CAS on the single _attributeProvider field which employs the following encoding:
+        // null: not initialized, s_nullAttributeProvider: null, otherwise: _attributeProvider
         private ICustomAttributeProvider? _attributeProvider;
+        private static readonly ICustomAttributeProvider s_nullAttributeProvider = typeof(NullAttributeProviderPlaceholder);
+        private sealed class NullAttributeProviderPlaceholder;
+
+        [UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+            Justification = "Looks up members that are already being referenced by the source generator.")]
+        private ICustomAttributeProvider InitializeAttributeProvider()
+        {
+            // If the property is source generated, perform a reflection lookup of its MemberInfo.
+            // Avoids overhead of reflection at startup and makes this method trimmable if unused.
+            ICustomAttributeProvider? provider = IsSourceGenerated && MemberName != null
+                ? DefaultJsonTypeInfoResolver.LookupMemberInfo(DeclaringType, MemberType, MemberName)
+                : null;
+
+            provider ??= s_nullAttributeProvider;
+            return Interlocked.CompareExchange(ref _attributeProvider, provider, null) ?? provider;
+        }
+
+        /// <summary>
+        /// Gets or sets a value indicating if the property or field should be replaced or populated during deserialization.
+        /// </summary>
+        /// <remarks>
+        /// Initial value for this property is based on the presence of <see cref="JsonObjectCreationHandlingAttribute"/> attribute on the property.
+        /// When <see langword="null"/> effective handling will be resolved based on
+        /// capability of property converter to populate, containing type's <see cref="JsonTypeInfo.PreferredPropertyObjectCreationHandling"/>.
+        /// and <see cref="JsonSerializerOptions.PreferredObjectCreationHandling"/> value.
+        /// </remarks>
+        public JsonObjectCreationHandling? ObjectCreationHandling
+        {
+            get => _objectCreationHandling;
+            set
+            {
+                VerifyMutable();
+
+                if (value != null)
+                {
+                    if (!JsonSerializer.IsValidCreationHandlingValue(value.Value))
+                    {
+                        throw new ArgumentOutOfRangeException(nameof(value));
+                    }
+                }
+
+                _objectCreationHandling = value;
+            }
+        }
+
+        private JsonObjectCreationHandling? _objectCreationHandling;
+        internal JsonObjectCreationHandling EffectiveObjectCreationHandling { get; private set; }
+
         internal string? MemberName { get; set; }
         internal MemberTypes MemberType { get; set; }
         internal bool IsVirtual { get; set; }
+        internal bool IsSourceGenerated { get; set; }
+
+        /// <summary>
+        /// Gets or sets a value indicating whether the return type of the getter is annotated as nullable.
+        /// </summary>
+        /// <exception cref="InvalidOperationException">
+        /// The <see cref="JsonPropertyInfo"/> instance has been locked for further modification.
+        ///
+        /// -or-
+        ///
+        /// The current <see cref="PropertyType"/> is not a reference type or <see cref="Nullable{T}"/>.
+        /// </exception>
+        /// <remarks>
+        /// Contracts originating from <see cref="DefaultJsonTypeInfoResolver"/> or <see cref="JsonSerializerContext"/>,
+        /// derive the value of this property from nullable reference type annotations, including annotations
+        /// from attributes such as <see cref="NotNullAttribute"/> or <see cref="MaybeNullAttribute"/>.
+        ///
+        /// This property has no effect on serialization unless the <see cref="JsonSerializerOptions.RespectNullableAnnotations"/>
+        /// property has been enabled, in which case the serializer will reject any <see langword="null"/> values returned by the getter.
+        /// </remarks>
+        public bool IsGetNullable
+        {
+            get => _isGetNullable;
+            set
+            {
+                VerifyMutable();
+
+                if (value && !PropertyTypeCanBeNull)
+                {
+                    ThrowHelper.ThrowInvalidOperationException_PropertyTypeNotNullable(this);
+                }
+
+                _isGetNullable = value;
+            }
+        }
+
+        private bool _isGetNullable;
+
+        /// <summary>
+        /// Gets or sets a value indicating whether the input type of the setter is annotated as nullable.
+        /// </summary>
+        /// <exception cref="InvalidOperationException">
+        /// The <see cref="JsonPropertyInfo"/> instance has been locked for further modification.
+        ///
+        /// -or-
+        ///
+        /// The current <see cref="PropertyType"/> is not a reference type or <see cref="Nullable{T}"/>.
+        /// </exception>
+        /// <remarks>
+        /// Contracts originating from <see cref="DefaultJsonTypeInfoResolver"/> or <see cref="JsonSerializerContext"/>,
+        /// derive the value of this property from nullable reference type annotations, including annotations
+        /// from attributes such as <see cref="AllowNullAttribute"/> or <see cref="DisallowNullAttribute"/>.
+        ///
+        /// This property has no effect on deserialization unless the <see cref="JsonSerializerOptions.RespectNullableAnnotations"/>
+        /// property has been enabled, in which case the serializer will reject any <see langword="null"/> deserialization results.
+        ///
+        /// If the property has been associated with a deserialization constructor parameter,
+        /// this setting reflected the nullability annotation of the parameter and not the property setter.
+        /// </remarks>
+        public bool IsSetNullable
+        {
+            get => _isSetNullable;
+            set
+            {
+                VerifyMutable();
+
+                if (value && !PropertyTypeCanBeNull)
+                {
+                    ThrowHelper.ThrowInvalidOperationException_PropertyTypeNotNullable(this);
+                }
+
+                if (ParameterInfo != null)
+                {
+                    // Ensure the new setting is reflected in the associated parameter.
+                    ParameterInfo.IsNullable = value;
+                }
+
+                _isSetNullable = value;
+            }
+        }
+
+        private bool _isSetNullable;
 
         /// <summary>
         /// Specifies whether the current property is a special extension data property.
@@ -235,14 +372,18 @@ namespace System.Text.Json.Serialization.Metadata
 
         private bool _isRequired;
 
+        internal JsonParameterInfo? ParameterInfo { get; private set; }
+
         internal JsonPropertyInfo(Type declaringType, Type propertyType, JsonTypeInfo? declaringTypeInfo, JsonSerializerOptions options)
         {
-            Debug.Assert(declaringTypeInfo is null || declaringTypeInfo.Type == declaringType);
+            Debug.Assert(declaringTypeInfo is null || declaringType.IsAssignableFrom(declaringTypeInfo.Type));
 
             DeclaringType = declaringType;
             PropertyType = propertyType;
-            ParentTypeInfo = declaringTypeInfo; // null parentTypeInfo means it's not tied yet
+            DeclaringTypeInfo = declaringTypeInfo; // null declaringTypeInfo means it's not tied yet
             Options = options;
+
+            _isGetNullable = _isSetNullable = PropertyTypeCanBeNull;
         }
 
         internal static JsonPropertyInfo GetPropertyPlaceholder()
@@ -265,14 +406,14 @@ namespace System.Text.Json.Serialization.Metadata
 
         private protected void VerifyMutable()
         {
-            ParentTypeInfo?.VerifyMutable();
+            DeclaringTypeInfo?.VerifyMutable();
         }
 
         internal bool IsConfigured { get; private set; }
 
         internal void Configure()
         {
-            Debug.Assert(ParentTypeInfo != null);
+            Debug.Assert(DeclaringTypeInfo != null);
             Debug.Assert(!IsConfigured);
 
             if (IsIgnored)
@@ -289,6 +430,7 @@ namespace System.Text.Json.Serialization.Metadata
 
                 DetermineEffectiveConverter(_jsonTypeInfo);
                 DetermineNumberHandlingForProperty();
+                DetermineEffectiveObjectCreationHandlingForProperty();
                 DetermineSerializationCapabilities();
                 DetermineIgnoreCondition();
             }
@@ -324,7 +466,7 @@ namespace System.Text.Json.Serialization.Metadata
 
         [RequiresUnreferencedCode(JsonSerializer.SerializationUnreferencedCodeMessage)]
         [RequiresDynamicCode(JsonSerializer.SerializationRequiresDynamicCodeMessage)]
-        internal abstract void  DetermineReflectionPropertyAccessors(MemberInfo memberInfo);
+        internal abstract void DetermineReflectionPropertyAccessors(MemberInfo memberInfo, bool useNonPublicAccessors);
 
         private void CacheNameAsUtf8BytesAndEscapedNameSection()
         {
@@ -378,6 +520,7 @@ namespace System.Text.Json.Serialization.Metadata
                 // No policy to be applied if either:
                 // 1. JsonPropertyInfo is a custom instance (not generated via reflection or sourcegen).
                 // 2. A JsonIgnoreCondition has been specified on the property level.
+                CanDeserializeOrPopulate = CanDeserialize || EffectiveObjectCreationHandling == JsonObjectCreationHandling.Populate;
                 return;
             }
 
@@ -398,14 +541,16 @@ namespace System.Text.Json.Serialization.Metadata
                     CanSerialize = false;
                 }
             }
+
+            CanDeserializeOrPopulate = CanDeserialize || EffectiveObjectCreationHandling == JsonObjectCreationHandling.Populate;
         }
 
         private void DetermineNumberHandlingForTypeInfo()
         {
-            Debug.Assert(ParentTypeInfo != null, "We should have ensured parent is assigned in JsonTypeInfo");
-            Debug.Assert(!ParentTypeInfo.IsConfigured);
+            Debug.Assert(DeclaringTypeInfo != null, "We should have ensured parent is assigned in JsonTypeInfo");
+            Debug.Assert(!DeclaringTypeInfo.IsConfigured);
 
-            JsonNumberHandling? declaringTypeNumberHandling = ParentTypeInfo.NumberHandling;
+            JsonNumberHandling? declaringTypeNumberHandling = DeclaringTypeInfo.NumberHandling;
 
             if (declaringTypeNumberHandling != null && declaringTypeNumberHandling != JsonNumberHandling.Strict && !EffectiveConverter.IsInternalConverter)
             {
@@ -430,7 +575,7 @@ namespace System.Text.Json.Serialization.Metadata
 
         private void DetermineNumberHandlingForProperty()
         {
-            Debug.Assert(ParentTypeInfo != null, "We should have ensured parent is assigned in JsonTypeInfo");
+            Debug.Assert(DeclaringTypeInfo != null, "We should have ensured parent is assigned in JsonTypeInfo");
             Debug.Assert(!IsConfigured, "Should not be called post-configuration.");
             Debug.Assert(_jsonTypeInfo != null, "Must have already been determined on configuration.");
 
@@ -439,7 +584,7 @@ namespace System.Text.Json.Serialization.Metadata
             if (numberHandlingIsApplicable)
             {
                 // Priority 1: Get handling from attribute on property/field, its parent class type or property type.
-                JsonNumberHandling? handling = NumberHandling ?? ParentTypeInfo.NumberHandling ?? _jsonTypeInfo.NumberHandling;
+                JsonNumberHandling? handling = NumberHandling ?? DeclaringTypeInfo.NumberHandling ?? _jsonTypeInfo.NumberHandling;
 
                 // Priority 2: Get handling from JsonSerializerOptions instance.
                 if (!handling.HasValue && Options.NumberHandling != JsonNumberHandling.Strict)
@@ -452,6 +597,95 @@ namespace System.Text.Json.Serialization.Metadata
             else if (NumberHandling.HasValue && NumberHandling != JsonNumberHandling.Strict)
             {
                 ThrowHelper.ThrowInvalidOperationException_NumberHandlingOnPropertyInvalid(this);
+            }
+        }
+
+        private void DetermineEffectiveObjectCreationHandlingForProperty()
+        {
+            Debug.Assert(EffectiveConverter != null, "Must have calculated the effective converter.");
+            Debug.Assert(DeclaringTypeInfo != null, "We should have ensured parent is assigned in JsonTypeInfo");
+            Debug.Assert(!IsConfigured, "Should not be called post-configuration.");
+
+            JsonObjectCreationHandling effectiveObjectCreationHandling = JsonObjectCreationHandling.Replace;
+            if (ObjectCreationHandling == null)
+            {
+                // Consult type-level configuration, then global configuration.
+                // Ignore global configuration if we're using a parameterized constructor.
+                JsonObjectCreationHandling preferredCreationHandling =
+                    DeclaringTypeInfo.PreferredPropertyObjectCreationHandling
+                    ?? (DeclaringTypeInfo.DetermineUsesParameterizedConstructor()
+                        ? JsonObjectCreationHandling.Replace
+                        : Options.PreferredObjectCreationHandling);
+
+                bool canPopulate =
+                    preferredCreationHandling == JsonObjectCreationHandling.Populate &&
+                    EffectiveConverter.CanPopulate &&
+                    Get != null &&
+                    (!PropertyType.IsValueType || Set != null) &&
+                    !DeclaringTypeInfo.SupportsPolymorphicDeserialization &&
+                    !(Set == null && IgnoreReadOnlyMember);
+
+                effectiveObjectCreationHandling = canPopulate ? JsonObjectCreationHandling.Populate : JsonObjectCreationHandling.Replace;
+            }
+            else if (ObjectCreationHandling == JsonObjectCreationHandling.Populate)
+            {
+                if (!EffectiveConverter.CanPopulate)
+                {
+                    ThrowHelper.ThrowInvalidOperationException_ObjectCreationHandlingPopulateNotSupportedByConverter(this);
+                }
+
+                if (Get == null)
+                {
+                    ThrowHelper.ThrowInvalidOperationException_ObjectCreationHandlingPropertyMustHaveAGetter(this);
+                }
+
+                if (PropertyType.IsValueType && Set == null)
+                {
+                    ThrowHelper.ThrowInvalidOperationException_ObjectCreationHandlingPropertyValueTypeMustHaveASetter(this);
+                }
+
+                Debug.Assert(_jsonTypeInfo != null);
+                Debug.Assert(_jsonTypeInfo.IsConfigurationStarted);
+                if (JsonTypeInfo.SupportsPolymorphicDeserialization)
+                {
+                    ThrowHelper.ThrowInvalidOperationException_ObjectCreationHandlingPropertyCannotAllowPolymorphicDeserialization(this);
+                }
+
+                if (Set == null && IgnoreReadOnlyMember)
+                {
+                    ThrowHelper.ThrowInvalidOperationException_ObjectCreationHandlingPropertyCannotAllowReadOnlyMember(this);
+                }
+
+                effectiveObjectCreationHandling = JsonObjectCreationHandling.Populate;
+            }
+
+            if (effectiveObjectCreationHandling is JsonObjectCreationHandling.Populate)
+            {
+                if (DeclaringTypeInfo.DetermineUsesParameterizedConstructor())
+                {
+                    ThrowHelper.ThrowNotSupportedException_ObjectCreationHandlingPropertyDoesNotSupportParameterizedConstructors();
+                }
+
+                if (Options.ReferenceHandlingStrategy != ReferenceHandlingStrategy.None)
+                {
+                    ThrowHelper.ThrowInvalidOperationException_ObjectCreationHandlingPropertyCannotAllowReferenceHandling();
+                }
+            }
+
+            // Validation complete, commit configuration.
+            EffectiveObjectCreationHandling = effectiveObjectCreationHandling;
+        }
+
+        private void DetermineParameterInfo()
+        {
+            Debug.Assert(DeclaringTypeInfo?.IsConfigured is false);
+            ParameterInfo = DeclaringTypeInfo.CreateMatchingParameterInfo(this);
+            if (ParameterInfo != null)
+            {
+                // Given that we have associated a constructor parameter to this property,
+                // deserialization is no longer governed by the property setter.
+                // Ensure nullability configuration is copied over from the parameter to the property.
+                _isSetNullable = ParameterInfo.IsNullable;
             }
         }
 
@@ -487,6 +721,13 @@ namespace System.Text.Json.Serialization.Metadata
                 potentialNumberType == typeof(ushort) ||
                 potentialNumberType == typeof(uint) ||
                 potentialNumberType == typeof(ulong) ||
+#if NET
+                potentialNumberType == typeof(Half) ||
+#endif
+#if NET
+                potentialNumberType == typeof(Int128) ||
+                potentialNumberType == typeof(UInt128) ||
+#endif
                 potentialNumberType == JsonTypeInfo.ObjectType;
         }
 
@@ -521,7 +762,6 @@ namespace System.Text.Json.Serialization.Metadata
 
         internal bool HasGetter => _untypedGet is not null;
         internal bool HasSetter => _untypedSet is not null;
-
         internal bool IgnoreNullTokensOnRead { get; private protected set; }
         internal bool IgnoreDefaultValuesOnWrite { get; private protected set; }
 
@@ -542,7 +782,7 @@ namespace System.Text.Json.Serialization.Metadata
         /// <summary>
         /// True if the corresponding cref="JsonTypeInfo.PropertyInfoForTypeInfo"/> is this instance.
         /// </summary>
-        internal bool IsForTypeInfo { get; set; }
+        internal bool IsForTypeInfo { get; init; }
 
         // There are 3 copies of the property name:
         // 1) Name. The unescaped property name.
@@ -687,7 +927,7 @@ namespace System.Text.Json.Serialization.Metadata
             }
 
             JsonConverter<JsonElement> converter = (JsonConverter<JsonElement>)Options.GetConverterInternal(typeof(JsonElement));
-            if (!converter.TryRead(ref reader, typeof(JsonElement), Options, ref state, out JsonElement jsonElement))
+            if (!converter.TryRead(ref reader, typeof(JsonElement), Options, ref state, out JsonElement jsonElement, out _))
             {
                 // JsonElement is a struct that must be read in full.
                 value = null;
@@ -700,14 +940,34 @@ namespace System.Text.Json.Serialization.Metadata
 
         internal void EnsureChildOf(JsonTypeInfo parent)
         {
-            if (ParentTypeInfo == null)
+            if (DeclaringTypeInfo is null)
             {
-                ParentTypeInfo = parent;
+                DeclaringTypeInfo = parent;
             }
-            else if (ParentTypeInfo != parent)
+            else if (DeclaringTypeInfo != parent)
             {
                 ThrowHelper.ThrowInvalidOperationException_JsonPropertyInfoIsBoundToDifferentJsonTypeInfo(this);
             }
+
+            DetermineParameterInfo();
+        }
+
+        /// <summary>
+        /// Tries to get pre-populated value from the property if populating is enabled.
+        /// If property value is <see langword="null"/> this method will return false.
+        /// </summary>
+        internal bool TryGetPrePopulatedValue(scoped ref ReadStack state)
+        {
+            if (EffectiveObjectCreationHandling != JsonObjectCreationHandling.Populate)
+                return false;
+
+            Debug.Assert(EffectiveConverter.CanPopulate, "Property is marked with Populate but converter cannot populate. This should have been validated in Configure");
+            Debug.Assert(state.Parent.ReturnValue != null, "Parent object is null");
+            Debug.Assert(!state.Current.IsPopulating, "We've called TryGetPrePopulatedValue more than once");
+            object? value = Get!(state.Parent.ReturnValue);
+            state.Current.ReturnValue = value;
+            state.Current.IsPopulating = value != null;
+            return value != null;
         }
 
         internal Type DeclaringType { get; }
@@ -716,7 +976,6 @@ namespace System.Text.Json.Serialization.Metadata
         {
             get
             {
-                Debug.Assert(IsConfigured);
                 Debug.Assert(_jsonTypeInfo?.IsConfigurationStarted == true);
                 // Even though this instance has already been configured,
                 // it is possible for contending threads to call the property
@@ -754,6 +1013,11 @@ namespace System.Text.Json.Serialization.Metadata
         /// Reflects the value of <see cref="HasSetter"/> combined with any additional global ignore policies.
         /// </summary>
         internal bool CanDeserialize { get; private set; }
+
+        /// <summary>
+        /// Reflects the value can be deserialized or populated
+        /// </summary>
+        internal bool CanDeserializeOrPopulate { get; private set; }
 
         /// <summary>
         /// Relevant to source generated metadata: did the property have the <see cref="JsonIncludeAttribute"/>?
@@ -806,6 +1070,7 @@ namespace System.Text.Json.Serialization.Metadata
         /// It is set just before property is configured and does not change afterward.
         /// It is not equivalent to index on the properties list
         /// </summary>
+        [DebuggerBrowsable(DebuggerBrowsableState.Never)]
         internal int RequiredPropertyIndex
         {
             get
@@ -823,7 +1088,10 @@ namespace System.Text.Json.Serialization.Metadata
 
         private int _index;
 
+        internal bool IsOverriddenOrShadowedBy(JsonPropertyInfo other)
+            => MemberName == other.MemberName && DeclaringType.IsAssignableFrom(other.DeclaringType);
+
         [DebuggerBrowsable(DebuggerBrowsableState.Never)]
-        private string DebuggerDisplay => $"PropertyType = {PropertyType}, Name = {Name}, DeclaringType = {DeclaringType}";
+        private string DebuggerDisplay => $"Name = {Name}, PropertyType = {PropertyType}";
     }
 }

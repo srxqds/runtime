@@ -55,21 +55,22 @@ namespace ILCompiler.DependencyAnalysis
         public override IEnumerable<DependencyListEntry> GetStaticDependencies(NodeFactory factory)
         {
             DependencyList dependencies = null;
-            switch (_entity)
+            try
             {
-                case EcmaMethod method:
-                    foreach (var attribute in method.GetDecodedCustomAttributes("System.Diagnostics.CodeAnalysis", "DynamicDependencyAttribute"))
-                    {
-                        AddDependenciesDueToDynamicDependencyAttribute(ref dependencies, factory, method, method.OwningType, attribute);
-                    }
-                    break;
+                (TypeDesc owningType, IEnumerable<CustomAttributeValue<TypeDesc>> attributes) = _entity switch
+                {
+                    EcmaMethod method => (method.OwningType, method.GetDecodedCustomAttributes("System.Diagnostics.CodeAnalysis", "DynamicDependencyAttribute")),
+                    _ => (((EcmaField)_entity).OwningType, ((EcmaField)_entity).GetDecodedCustomAttributes("System.Diagnostics.CodeAnalysis", "DynamicDependencyAttribute")),
+                };
 
-                case EcmaField field:
-                    foreach (var attribute in field.GetDecodedCustomAttributes("System.Diagnostics.CodeAnalysis", "DynamicDependencyAttribute"))
-                    {
-                        AddDependenciesDueToDynamicDependencyAttribute(ref dependencies, factory, field, field.OwningType, attribute);
-                    }
-                    break;
+                foreach (CustomAttributeValue<TypeDesc> attribute in attributes)
+                {
+                    AddDependenciesDueToDynamicDependencyAttribute(ref dependencies, factory, _entity, owningType, attribute);
+                }
+            }
+            catch (TypeSystemException)
+            {
+                // Ignore entities with custom attributes that don't work.
             }
 
             return dependencies;
@@ -121,7 +122,7 @@ namespace ILCompiler.DependencyAnalysis
                     // DynamicDependencyAttribute(String, String, String)
                     case 3 when fixedArgs[1].Value is string typeStringFromAttribute
                         && fixedArgs[2].Value is string assemblyStringFromAttribute:
-                        ModuleDesc asm = factory.TypeSystemContext.ResolveAssembly(new System.Reflection.AssemblyName(assemblyStringFromAttribute), throwIfNotFound: false);
+                        ModuleDesc asm = factory.TypeSystemContext.ResolveAssembly(AssemblyNameInfo.Parse(assemblyStringFromAttribute), throwIfNotFound: false);
                         if (asm == null)
                         {
                             metadataManager.Logger.LogWarning(
@@ -170,7 +171,7 @@ namespace ILCompiler.DependencyAnalysis
                     && fixedArgs[2].Value is string assemblyStringFromAttribute)
                 {
                     // DynamicDependencyAttribute(DynamicallyAccessedMemberTypes, String, String)
-                    ModuleDesc asm = factory.TypeSystemContext.ResolveAssembly(new System.Reflection.AssemblyName(assemblyStringFromAttribute), throwIfNotFound: false);
+                    ModuleDesc asm = factory.TypeSystemContext.ResolveAssembly(AssemblyNameInfo.Parse(assemblyStringFromAttribute), throwIfNotFound: false);
                     if (asm == null)
                     {
                         metadataManager.Logger.LogWarning(

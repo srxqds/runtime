@@ -34,6 +34,7 @@
 // WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 //
 
+using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
@@ -43,110 +44,6 @@ using System.Runtime.InteropServices;
 
 namespace System.Reflection.Emit
 {
-    public abstract partial class TypeBuilder
-    {
-        [UnconditionalSuppressMessage("ReflectionAnalysis", "IL2070:UnrecognizedReflectionPattern",
-            Justification = "Linker thinks Type.GetConstructor(ConstructorInfo) is one of the public APIs because it doesn't analyze method signatures. We already have ConstructorInfo.")]
-        [UnconditionalSuppressMessage("ReflectionAnalysis", "IL2055:UnrecognizedReflectionPattern",
-            Justification = "Type.MakeGenericType is used to create a typical instantiation")]
-        public static ConstructorInfo GetConstructor(Type type, ConstructorInfo constructor)
-        {
-            if (!IsValidGetMethodType(type))
-                throw new ArgumentException(SR.Argument_MustBeTypeBuilder, nameof(type));
-
-            if (type is TypeBuilder && type.ContainsGenericParameters)
-                type = type.MakeGenericType(type.GetGenericArguments());
-
-            if (!constructor.DeclaringType!.IsGenericTypeDefinition)
-                throw new ArgumentException(SR.Argument_ConstructorNeedGenericDeclaringType, nameof(constructor));
-
-            if (constructor.DeclaringType != type.GetGenericTypeDefinition())
-                throw new ArgumentException(SR.Argument_InvalidConstructorDeclaringType, nameof(type));
-
-            ConstructorInfo res = type.GetConstructor(constructor);
-            if (res == null)
-                throw new ArgumentException(SR.Format(SR.MissingConstructor_Name, type));
-
-            return res;
-        }
-
-        private static bool IsValidGetMethodType(Type type)
-        {
-            if (type == null)
-                return false;
-
-            if (type is TypeBuilder || type is TypeBuilderInstantiation)
-                return true;
-            /*GetMethod() must work with TypeBuilders after CreateType() was called.*/
-            if (type.Module is ModuleBuilder)
-                return true;
-            if (type.IsGenericParameter)
-                return false;
-
-            Type[] inst = type.GetGenericArguments();
-            if (inst == null)
-                return false;
-            for (int i = 0; i < inst.Length; ++i)
-            {
-                if (IsValidGetMethodType(inst[i]))
-                    return true;
-            }
-            return false;
-        }
-
-        [UnconditionalSuppressMessage("ReflectionAnalysis", "IL2055:UnrecognizedReflectionPattern",
-            Justification = "Type.MakeGenericType is used to create a typical instantiation")]
-        public static MethodInfo GetMethod(Type type, MethodInfo method)
-        {
-            if (!IsValidGetMethodType(type))
-                throw new ArgumentException(SR.Argument_MustBeTypeBuilder, nameof(type));
-
-            if (type is TypeBuilder && type.ContainsGenericParameters)
-                type = type.MakeGenericType(type.GetGenericArguments());
-
-            if (method.IsGenericMethod && !method.IsGenericMethodDefinition)
-                throw new ArgumentException(SR.Argument_NeedGenericMethodDefinition, nameof(method));
-
-            if (!method.DeclaringType!.IsGenericTypeDefinition)
-                throw new ArgumentException(SR.Argument_MethodNeedGenericDeclaringType, nameof(method));
-
-            if (method.DeclaringType != type.GetGenericTypeDefinition())
-                throw new ArgumentException(SR.Argument_InvalidMethodDeclaringType, nameof(type));
-
-            MethodInfo res = type.GetMethod(method);
-            if (res == null)
-                throw new ArgumentException(SR.Format(SR.MissingMethod_Name, type, method.Name));
-
-            return res;
-        }
-
-        [UnconditionalSuppressMessage("ReflectionAnalysis", "IL2055:UnrecognizedReflectionPattern",
-            Justification = "Type.MakeGenericType is used to create a typical instantiation")]
-        public static FieldInfo GetField(Type type, FieldInfo field)
-        {
-            if (!IsValidGetMethodType(type))
-                throw new ArgumentException(SR.Argument_MustBeTypeBuilder, nameof(type));
-
-            if (type is TypeBuilder && type.ContainsGenericParameters)
-                type = type.MakeGenericType(type.GetGenericArguments());
-
-            if (!field.DeclaringType!.IsGenericTypeDefinition)
-                throw new ArgumentException(SR.Argument_FieldNeedGenericDeclaringType, nameof(field));
-
-            if (field.DeclaringType != type.GetGenericTypeDefinition())
-                throw new ArgumentException(SR.Argument_InvalidFieldDeclaringType, nameof(type));
-
-            if (field is FieldOnTypeBuilderInstantiation)
-                throw new ArgumentException(SR.Argument_FieldNeedGenericDeclaringType, nameof(field));
-
-            FieldInfo res = type.GetField(field);
-            if (res == null)
-                throw new System.Exception(SR.Format(SR.MissingField, field.Name));
-            else
-                return res;
-        }
-    }
-
     [StructLayout(LayoutKind.Sequential)]
     internal sealed partial class RuntimeTypeBuilder : TypeBuilder
     {
@@ -213,7 +110,7 @@ namespace System.Reflection.Emit
 
         [DynamicDependency(nameof(state))]  // Automatically keeps all previous fields too due to StructLayout
         [DynamicDependency(nameof(IsAssignableToInternal))] // Used from reflection.c: mono_reflection_call_is_assignable_to
-        internal RuntimeTypeBuilder(RuntimeModuleBuilder mb, string name, TypeAttributes attr, [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.All)]Type? parent, Type[]? interfaces, PackingSize packing_size, int type_size, Type? nesting_type)
+        internal RuntimeTypeBuilder(RuntimeModuleBuilder mb, string name, TypeAttributes attr, [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.All)] Type? parent, Type[]? interfaces, PackingSize packing_size, int type_size, Type? nesting_type)
         {
             this.is_hidden_global_type = false;
             int sep_index;
@@ -430,7 +327,7 @@ namespace System.Reflection.Emit
                 if (types == null)
                 {
                     if (count > 1)
-                        throw new AmbiguousMatchException();
+                        throw ThrowHelper.GetAmbiguousMatchException(found!);
                     return found;
                 }
                 MethodBase[] match = new MethodBase[count];
@@ -1356,24 +1253,6 @@ namespace System.Reflection.Emit
             }
         }
 
-        [RequiresDynamicCode("The code for an array of the specified type might not be available.")]
-        public override Type MakeArrayType()
-        {
-            return SymbolType.FormCompoundType("[]", this, 0)!;
-        }
-
-        [RequiresDynamicCode("The code for an array of the specified type might not be available.")]
-        public override Type MakeArrayType(int rank)
-        {
-            string s = GetRankString(rank);
-            return SymbolType.FormCompoundType(s, this, 0)!;
-        }
-
-        public override Type MakeByRefType()
-        {
-            return SymbolType.FormCompoundType("&", this, 0)!;
-        }
-
         [RequiresDynamicCode("The native code for this instantiation might not be available at runtime.")]
         [RequiresUnreferencedCode("If some of the generic arguments are annotated (either with DynamicallyAccessedMembersAttribute, or generic constraints), trimming can't validate that the requirements of those annotations are met.")]
         public override Type MakeGenericType(params Type[] typeArguments)
@@ -1397,11 +1276,6 @@ namespace System.Reflection.Emit
             return RuntimeAssemblyBuilder.MakeGenericType(this, copy);
         }
 
-        public override Type MakePointerType()
-        {
-            return SymbolType.FormCompoundType("*", this, 0)!;
-        }
-
         public override RuntimeTypeHandle TypeHandle
         {
             get
@@ -1411,15 +1285,19 @@ namespace System.Reflection.Emit
             }
         }
 
-        protected override void SetCustomAttributeCore(CustomAttributeBuilder customBuilder)
+        internal void SetCustomAttribute(ConstructorInfo con, ReadOnlySpan<byte> binaryAttribute)
         {
-            string? attrname = customBuilder.Ctor.ReflectedType!.FullName;
+            SetCustomAttributeCore(con, binaryAttribute);
+        }
+
+        protected override void SetCustomAttributeCore(ConstructorInfo con, ReadOnlySpan<byte> binaryAttribute)
+        {
+            string? attrname = con.ReflectedType!.FullName;
             if (attrname == "System.Runtime.InteropServices.StructLayoutAttribute")
             {
-                byte[] data = customBuilder.Data;
                 int layout_kind; /* the (stupid) ctor takes a short or an int ... */
-                layout_kind = (int)data[2];
-                layout_kind |= ((int)data[3]) << 8;
+                layout_kind = (int)binaryAttribute[2];
+                layout_kind |= ((int)binaryAttribute[3]) << 8;
                 attrs &= ~TypeAttributes.LayoutMask;
                 attrs |= ((LayoutKind)layout_kind) switch
                 {
@@ -1429,38 +1307,36 @@ namespace System.Reflection.Emit
                     _ => throw new Exception(SR.Argument_InvalidKindOfTypeForCA), // we should ignore it since it can be any value anyway...
                 };
 
-                Type ctor_type = customBuilder.Ctor is RuntimeConstructorBuilder builder ? builder.parameters![0] : customBuilder.Ctor.GetParametersInternal()[0].ParameterType;
+                Type ctor_type = con is RuntimeConstructorBuilder builder ? builder.parameters![0] : con.GetParametersInternal()[0].ParameterType;
                 int pos = 6;
                 if (ctor_type.FullName == "System.Int16")
                     pos = 4;
-                int nnamed = (int)data[pos++];
-                nnamed |= ((int)data[pos++]) << 8;
+                int nnamed = BinaryPrimitives.ReadUInt16LittleEndian(binaryAttribute.Slice(pos++));
+                pos++;
                 for (int i = 0; i < nnamed; ++i)
                 {
                     //byte named_type = data [pos++];
                     pos++;
-                    byte type = data[pos++];
+                    byte type = binaryAttribute[pos++];
                     int len;
                     string named_name;
 
                     if (type == 0x55)
                     {
-                        len = CustomAttributeBuilder.decode_len(data, pos, out pos);
+                        len = CustomAttributeBuilder.decode_len(binaryAttribute, pos, out pos);
                         //string named_typename =
-                        CustomAttributeBuilder.string_from_bytes(data, pos, len);
+                        CustomAttributeBuilder.string_from_bytes(binaryAttribute, pos, len);
                         pos += len;
                         // FIXME: Check that 'named_type' and 'named_typename' match, etc.
                         //        See related code/FIXME in mono/mono/metadata/reflection.c
                     }
 
-                    len = CustomAttributeBuilder.decode_len(data, pos, out pos);
-                    named_name = CustomAttributeBuilder.string_from_bytes(data, pos, len);
+                    len = CustomAttributeBuilder.decode_len(binaryAttribute, pos, out pos);
+                    named_name = CustomAttributeBuilder.string_from_bytes(binaryAttribute, pos, len);
                     pos += len;
                     /* all the fields are integers in StructLayout */
-                    int value = (int)data[pos++];
-                    value |= ((int)data[pos++]) << 8;
-                    value |= ((int)data[pos++]) << 16;
-                    value |= ((int)data[pos++]) << 24;
+                    int value = BinaryPrimitives.ReadInt32LittleEndian(binaryAttribute.Slice(pos++));
+                    pos += 3;
                     switch (named_name)
                     {
                         case "CharSet":
@@ -1499,11 +1375,13 @@ namespace System.Reflection.Emit
                 attrs |= TypeAttributes.SpecialName;
                 return;
             }
+#pragma warning disable SYSLIB0050 // TypeAttributes.Serializable is obsolete
             else if (attrname == "System.SerializableAttribute")
             {
                 attrs |= TypeAttributes.Serializable;
                 return;
             }
+#pragma warning restore SYSLIB0050
             else if (attrname == "System.Runtime.InteropServices.ComImportAttribute")
             {
                 attrs |= TypeAttributes.Import;
@@ -1518,6 +1396,8 @@ namespace System.Reflection.Emit
                 is_byreflike_set = 1;
             }
 
+            CustomAttributeBuilder customBuilder = new CustomAttributeBuilder(con, binaryAttribute);
+
             if (cattrs != null)
             {
                 CustomAttributeBuilder[] new_array = new CustomAttributeBuilder[cattrs.Length + 1];
@@ -1530,11 +1410,6 @@ namespace System.Reflection.Emit
                 cattrs = new CustomAttributeBuilder[1];
                 cattrs[0] = customBuilder;
             }
-        }
-
-        protected override void SetCustomAttributeCore(ConstructorInfo con, byte[] binaryAttribute)
-        {
-            SetCustomAttributeCore(new CustomAttributeBuilder(con, binaryAttribute));
         }
 
         protected override EventBuilder DefineEventCore(string name, EventAttributes attributes, Type eventtype)

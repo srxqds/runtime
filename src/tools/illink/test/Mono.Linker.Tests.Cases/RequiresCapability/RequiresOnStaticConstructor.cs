@@ -2,19 +2,14 @@
 // Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
 using System;
-using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
-using System.Linq;
 using System.Reflection;
 using System.Runtime.CompilerServices;
-using System.Text;
-using System.Threading.Tasks;
 using Mono.Linker.Tests.Cases.Expectations.Assertions;
 using Mono.Linker.Tests.Cases.Expectations.Helpers;
 
 namespace Mono.Linker.Tests.Cases.RequiresCapability
 {
-	[IgnoreTestCase ("Ignore in NativeAOT, see https://github.com/dotnet/runtime/issues/82447", IgnoredBy = Tool.NativeAot)]
 	[SkipKeptItemsValidation]
 	[ExpectedNoWarnings]
 	class RequiresOnStaticConstructor
@@ -28,14 +23,15 @@ namespace Mono.Linker.Tests.Cases.RequiresCapability
 			TestTypeIsBeforeFieldInit ();
 			TestStaticCtorOnTypeWithRequires ();
 			TestRunClassConstructorOnTypeWithRequires ();
+			TestRunClassConstructorOnConstructorWithRequires ();
 			typeof (StaticCtor).RequiresNonPublicConstructors ();
 		}
 
 		class StaticCtor
 		{
 			[ExpectedWarning ("IL2026", "--MethodWithRequires--")]
-			[ExpectedWarning ("IL3002", "--MethodWithRequires--", ProducedBy = Tool.Analyzer)]
-			[ExpectedWarning ("IL3050", "--MethodWithRequires--", ProducedBy = Tool.Analyzer)]
+			[ExpectedWarning ("IL3002", "--MethodWithRequires--", Tool.Analyzer | Tool.NativeAot, "")]
+			[ExpectedWarning ("IL3050", "--MethodWithRequires--", Tool.Analyzer | Tool.NativeAot, "")]
 			[ExpectedWarning ("IL2116", "StaticCtor..cctor()")]
 			[RequiresUnreferencedCode ("Message for --TestStaticCtor--")]
 			static StaticCtor ()
@@ -52,8 +48,8 @@ namespace Mono.Linker.Tests.Cases.RequiresCapability
 		[RequiresUnreferencedCode ("Message for --StaticCtorOnTypeWithRequires--")]
 		class StaticCtorOnTypeWithRequires
 		{
-			[ExpectedWarning ("IL3002", "--MethodWithRequires--", ProducedBy = Tool.Analyzer)]
-			[ExpectedWarning ("IL3050", "--MethodWithRequires--", ProducedBy = Tool.Analyzer)]
+			[ExpectedWarning ("IL3002", "--MethodWithRequires--", Tool.Analyzer | Tool.NativeAot, "")]
+			[ExpectedWarning ("IL3050", "--MethodWithRequires--", Tool.Analyzer | Tool.NativeAot, "")]
 			static StaticCtorOnTypeWithRequires () => MethodWithRequires ();
 		}
 
@@ -69,6 +65,23 @@ namespace Mono.Linker.Tests.Cases.RequiresCapability
 		{
 			var typeHandle = typeof (StaticCtorOnTypeWithRequires).TypeHandle;
 			RuntimeHelpers.RunClassConstructor (typeHandle);
+		}
+
+		class StaticCtorForRunClassConstructorWithRequires
+		{
+			[ExpectedWarning ("IL2116")]
+			[ExpectedWarning ("IL3004", Tool.Analyzer | Tool.NativeAot, "")]
+			[ExpectedWarning ("IL3056", Tool.Analyzer | Tool.NativeAot, "")]
+			[RequiresUnreferencedCode ("Message for --StaticCtorOnTypeWithRequires--")]
+			[RequiresAssemblyFiles ("Message for --StaticCtorOnTypeWithRequires--")]
+			[RequiresDynamicCode ("Message for --StaticCtorOnTypeWithRequires--")]
+			static StaticCtorForRunClassConstructorWithRequires () { }
+		}
+
+		static void TestRunClassConstructorOnConstructorWithRequires ()
+		{
+			// No warnings generated here - we rely on IL2116/IL3004/IL3056 in this case and avoid duplicate warnings
+			RuntimeHelpers.RunClassConstructor (typeof (StaticCtorForRunClassConstructorWithRequires).TypeHandle);
 		}
 
 		class StaticCtorTriggeredByFieldAccess
@@ -105,8 +118,8 @@ namespace Mono.Linker.Tests.Cases.RequiresCapability
 		class StaticCtorTriggeredByMethodCall
 		{
 			[ExpectedWarning ("IL2116", "StaticCtorTriggeredByMethodCall..cctor()")]
-			[ExpectedWarning ("IL3004", "StaticCtorTriggeredByMethodCall..cctor()", ProducedBy = Tool.Analyzer)]
-			[ExpectedWarning ("IL3056", "StaticCtorTriggeredByMethodCall..cctor()", ProducedBy = Tool.Analyzer)]
+			[ExpectedWarning ("IL3004", "StaticCtorTriggeredByMethodCall..cctor()", Tool.Analyzer | Tool.NativeAot, "")]
+			[ExpectedWarning ("IL3056", "StaticCtorTriggeredByMethodCall..cctor()", Tool.Analyzer | Tool.NativeAot, "")]
 			[RequiresUnreferencedCode ("Message for --StaticCtorTriggeredByMethodCall.Cctor--")]
 			[RequiresAssemblyFiles ("Message for --StaticCtorTriggeredByMethodCall.Cctor--")]
 			[RequiresDynamicCode ("Message for --StaticCtorTriggeredByMethodCall.Cctor--")]
@@ -124,8 +137,8 @@ namespace Mono.Linker.Tests.Cases.RequiresCapability
 
 
 		[ExpectedWarning ("IL2026", "--StaticCtorTriggeredByMethodCall.TriggerStaticCtorMarking--")]
-		[ExpectedWarning ("IL3002", "--StaticCtorTriggeredByMethodCall.TriggerStaticCtorMarking--", ProducedBy = Tool.Analyzer)]
-		[ExpectedWarning ("IL3050", "--StaticCtorTriggeredByMethodCall.TriggerStaticCtorMarking--", ProducedBy = Tool.Analyzer)]
+		[ExpectedWarning ("IL3002", "--StaticCtorTriggeredByMethodCall.TriggerStaticCtorMarking--", Tool.Analyzer | Tool.NativeAot, "")]
+		[ExpectedWarning ("IL3050", "--StaticCtorTriggeredByMethodCall.TriggerStaticCtorMarking--", Tool.Analyzer | Tool.NativeAot, "")]
 		static void TestStaticCtorTriggeredByMethodCall ()
 		{
 			new StaticCtorTriggeredByMethodCall ().TriggerStaticCtorMarking ();
@@ -133,9 +146,9 @@ namespace Mono.Linker.Tests.Cases.RequiresCapability
 
 		class TypeIsBeforeFieldInit
 		{
-			[ExpectedWarning ("IL2026", "Message from --TypeIsBeforeFieldInit.AnnotatedMethod--", ProducedBy = Tool.Analyzer)]
-			[ExpectedWarning ("IL3002", "Message from --TypeIsBeforeFieldInit.AnnotatedMethod--", ProducedBy = Tool.Analyzer)]
-			[ExpectedWarning ("IL3050", "Message from --TypeIsBeforeFieldInit.AnnotatedMethod--", ProducedBy = Tool.Analyzer)]
+			[ExpectedWarning ("IL2026", "Message from --TypeIsBeforeFieldInit.AnnotatedMethod--", Tool.Analyzer, "")]
+			[ExpectedWarning ("IL3002", "Message from --TypeIsBeforeFieldInit.AnnotatedMethod--", Tool.Analyzer, "")]
+			[ExpectedWarning ("IL3050", "Message from --TypeIsBeforeFieldInit.AnnotatedMethod--", Tool.Analyzer, "")]
 			public static int field = AnnotatedMethod ();
 
 			[RequiresUnreferencedCode ("Message from --TypeIsBeforeFieldInit.AnnotatedMethod--")]
@@ -149,7 +162,9 @@ namespace Mono.Linker.Tests.Cases.RequiresCapability
 		[LogContains ("IL2026: Mono.Linker.Tests.Cases.RequiresCapability.RequiresOnStaticConstructor.TypeIsBeforeFieldInit..cctor():" +
 			" Using member 'Mono.Linker.Tests.Cases.RequiresCapability.RequiresOnStaticConstructor.TypeIsBeforeFieldInit.AnnotatedMethod()'" +
 			" which has 'RequiresUnreferencedCodeAttribute' can break functionality when trimming application code." +
-			" Message from --TypeIsBeforeFieldInit.AnnotatedMethod--.", ProducedBy = Tool.Trimmer)]
+			" Message from --TypeIsBeforeFieldInit.AnnotatedMethod--.", ProducedBy = Tool.Trimmer | Tool.NativeAot)]
+		[LogContains ("IL3002: Mono.Linker.Tests.Cases.RequiresCapability.RequiresOnStaticConstructor.TypeIsBeforeFieldInit..cctor():", ProducedBy = Tool.NativeAot)]
+		[LogContains ("IL3050: Mono.Linker.Tests.Cases.RequiresCapability.RequiresOnStaticConstructor.TypeIsBeforeFieldInit..cctor():", ProducedBy = Tool.NativeAot)]
 		static void TestTypeIsBeforeFieldInit ()
 		{
 			var x = TypeIsBeforeFieldInit.field + 42;

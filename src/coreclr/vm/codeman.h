@@ -69,10 +69,6 @@ Abstract:
 #include "gcinfo.h"
 #include "eexcp.h"
 
-#if defined(FEATURE_EH_FUNCLETS) && !defined(USE_INDIRECT_CODEHEADER)
-#error "FEATURE_EH_FUNCLETS requires USE_INDIRECT_CODEHEADER"
-#endif // FEATURE_EH_FUNCLETS && !USE_INDIRECT_CODEHEADER
-
 class MethodDesc;
 class ICorJitCompiler;
 class IJitManager;
@@ -102,6 +98,10 @@ enum StubCodeBlockKind : int
     STUB_CODE_BLOCK_DYNAMICHELPER,
     STUB_CODE_BLOCK_STUBPRECODE,
     STUB_CODE_BLOCK_FIXUPPRECODE,
+    STUB_CODE_BLOCK_VSD_DISPATCH_STUB,
+    STUB_CODE_BLOCK_VSD_RESOLVE_STUB,
+    STUB_CODE_BLOCK_VSD_LOOKUP_STUB,
+    STUB_CODE_BLOCK_VSD_VTABLE_STUB,
     // Last valid value. Note that the definition is duplicated in debug\daccess\fntableaccess.cpp
     STUB_CODE_BLOCK_LAST = 0xF,
     // Placeholders returned by code:GetStubCodeBlockKind
@@ -121,20 +121,10 @@ enum StubCodeBlockKind : int
 // Today CodeHeader is used by the EEJitManager.
 // The GCInfo version is always current GCINFO_VERSION in this header.
 
-#ifdef USE_INDIRECT_CODEHEADER
 typedef DPTR(struct _hpRealCodeHdr) PTR_RealCodeHeader;
 typedef DPTR(struct _hpCodeHdr) PTR_CodeHeader;
 
-#else // USE_INDIRECT_CODEHEADER
-typedef DPTR(struct _hpCodeHdr) PTR_CodeHeader;
-
-#endif // USE_INDIRECT_CODEHEADER
-
-#ifdef USE_INDIRECT_CODEHEADER
 typedef struct _hpRealCodeHdr
-#else // USE_INDIRECT_CODEHEADER
-typedef struct _hpCodeHdr
-#endif // USE_INDIRECT_CODEHEADER
 {
 public:
     PTR_BYTE            phdrDebugInfo;
@@ -156,95 +146,9 @@ public:
 #endif // FEATURE_EH_FUNCLETS
 
 public:
-#ifndef USE_INDIRECT_CODEHEADER
-    //
-    // Note: that the JITted code follows immediately after the MethodDesc*
-    //
-    PTR_BYTE                GetDebugInfo()
-    {
-        SUPPORTS_DAC;
-
-        return phdrDebugInfo;
-    }
-    PTR_EE_ILEXCEPTION      GetEHInfo()
-    {
-        return phdrJitEHInfo;
-    }
-    PTR_BYTE                GetGCInfo()
-    {
-        SUPPORTS_DAC;
-        return phdrJitGCInfo;
-    }
-    PTR_MethodDesc          GetMethodDesc()
-    {
-        SUPPORTS_DAC;
-        return phdrMDesc;
-    }
-#if defined(FEATURE_GDBJIT)
-    VOID*                GetCalledMethods()
-    {
-        SUPPORTS_DAC;
-        return pCalledMethods;
-    }
-#endif
-    TADDR                   GetCodeStartAddress()
-    {
-        SUPPORTS_DAC;
-        return dac_cast<TADDR>(dac_cast<PTR_CodeHeader>(this) + 1);
-    }
-    StubCodeBlockKind       GetStubCodeBlockKind()
-    {
-        SUPPORTS_DAC;
-        return (StubCodeBlockKind)dac_cast<TADDR>(phdrMDesc);
-    }
-    BOOL                    IsStubCodeBlock()
-    {
-        SUPPORTS_DAC;
-        // Note that it is important for this comparison to be unsigned
-        return dac_cast<TADDR>(phdrMDesc) <= (TADDR)STUB_CODE_BLOCK_LAST;
-    }
-
-    void SetDebugInfo(PTR_BYTE pDI)
-    {
-        phdrDebugInfo = pDI;
-    }
-    void SetEHInfo(PTR_EE_ILEXCEPTION pEH)
-    {
-        phdrJitEHInfo = pEH;
-    }
-    void SetGCInfo(PTR_BYTE pGC)
-    {
-        phdrJitGCInfo = pGC;
-    }
-    void SetMethodDesc(PTR_MethodDesc pMD)
-    {
-        phdrMDesc = pMD;
-    }
-#if defined(FEATURE_GDBJIT)
-    void SetCalledMethods(VOID* pCM)
-    {
-        pCalledMethods = pCM;
-    }
-#endif
-    void SetStubCodeBlockKind(StubCodeBlockKind kind)
-    {
-        phdrMDesc = (PTR_MethodDesc)kind;
-    }
-#endif // !USE_INDIRECT_CODEHEADER
-
 // if we're using the indirect codeheaders then all enumeration is done by the code header
-#ifndef USE_INDIRECT_CODEHEADER
-#ifdef DACCESS_COMPILE
-    void EnumMemoryRegions(CLRDataEnumMemoryFlags flags, IJitManager* pJitMan);
-#endif  // DACCESS_COMPILE
-#endif  // USE_INDIRECT_CODEHEADER
-#ifdef USE_INDIRECT_CODEHEADER
 } RealCodeHeader;
-#else // USE_INDIRECT_CODEHEADER
-} CodeHeader;
-#endif // USE_INDIRECT_CODEHEADER
 
-#ifdef USE_INDIRECT_CODEHEADER
 typedef struct _hpCodeHdr
 {
     PTR_RealCodeHeader   pRealCodeHeader;
@@ -351,7 +255,6 @@ public:
 #endif  // DACCESS_COMPILE
 
 } CodeHeader;
-#endif // USE_INDIRECT_CODEHEADER
 
 
 //-----------------------------------------------------------------------------
@@ -480,13 +383,14 @@ struct HeapList
     size_t              maxCodeHeapSize;// Size of the entire contiguous block of memory
     size_t              reserveForJumpStubs; // Amount of memory reserved for jump stubs in this block
 
-#if defined(TARGET_AMD64) || defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64)
+    PTR_LoaderAllocator pLoaderAllocator; // LoaderAllocator of HeapList
+#if defined(TARGET_AMD64) || defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
     BYTE*               CLRPersonalityRoutine;  // jump thunk to personality routine
 #endif
 
     TADDR GetModuleBase()
     {
-#if defined(TARGET_AMD64) || defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64)
+#if defined(TARGET_AMD64) || defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
         return (TADDR)CLRPersonalityRoutine;
  #else
         return (TADDR)mapBase;
@@ -1454,7 +1358,12 @@ public:
                         
                         // This level is completely empty. Free it, and then null out the pointer to it.
                         pointerToLevelData->Uninstall();
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wfree-nonheap-object" // The compiler can't tell that this pointer always comes from a malloc call.
                         free((void*)rawData);
+#pragma GCC diagnostic pop
+#endif
                     }
                 }
 
@@ -1866,9 +1775,7 @@ public:
 
     void                allocCode(MethodDesc* pFD, size_t blockSize, size_t reserveForJumpStubs, CorJitAllocMemFlag flag, CodeHeader** ppCodeHeader, CodeHeader** ppCodeHeaderRW,
                                   size_t* pAllocatedSize, HeapList** ppCodeHeap
-#ifdef USE_INDIRECT_CODEHEADER
                                 , BYTE** ppRealHeader
-#endif
 #ifdef FEATURE_EH_FUNCLETS
                                 , UINT nUnwindInfos
 #endif
@@ -2098,9 +2005,6 @@ public:
     // Returns whether currentPC is in managed code. Returns false for jump stubs on WIN64.
     static BOOL IsManagedCode(PCODE currentPC);
 
-    // Special version with profiler hook
-    static BOOL IsManagedCode(PCODE currentPC, HostCallPreference hostCallPreference, BOOL *pfFailedReaderLock);
-
     // Returns true if currentPC is ready to run codegen
     static BOOL IsReadyToRunCode(PCODE currentPC);
 
@@ -2131,7 +2035,7 @@ public:
     class ReaderLockHolder
     {
     public:
-        ReaderLockHolder(HostCallPreference hostCallPreference = AllowHostCalls);
+        ReaderLockHolder();
         ~ReaderLockHolder();
 
         BOOL Acquired();
@@ -2306,9 +2210,9 @@ private:
 #endif
         }
 
-        static const element_t Null() { LIMITED_METHOD_CONTRACT; JumpStubEntry e; e.m_target = NULL; e.m_jumpStub = NULL; return e; }
-        static bool IsNull(const element_t &e) { LIMITED_METHOD_CONTRACT; return e.m_target == NULL; }
-        static const element_t Deleted() { LIMITED_METHOD_CONTRACT; JumpStubEntry e; e.m_target = (PCODE)-1; e.m_jumpStub = NULL; return e; }
+        static const element_t Null() { LIMITED_METHOD_CONTRACT; JumpStubEntry e; e.m_target = 0; e.m_jumpStub = 0; return e; }
+        static bool IsNull(const element_t &e) { LIMITED_METHOD_CONTRACT; return e.m_target == 0; }
+        static const element_t Deleted() { LIMITED_METHOD_CONTRACT; JumpStubEntry e; e.m_target = (PCODE)-1; e.m_jumpStub = 0; return e; }
         static bool IsDeleted(const element_t &e) { LIMITED_METHOD_CONTRACT; return e.m_target == (PCODE)-1; }
     };
     typedef SHash<JumpStubTraits> JumpStubTable;
@@ -2364,7 +2268,6 @@ inline TADDR EEJitManager::JitTokenToStartAddress(const METHODTOKEN& MethodToken
     CONTRACTL {
         NOTHROW;
         GC_NOTRIGGER;
-        HOST_NOCALLS;
         SUPPORTS_DAC;
     } CONTRACTL_END;
 
@@ -2378,7 +2281,6 @@ inline void EEJitManager::JitTokenToMethodRegionInfo(const METHODTOKEN& MethodTo
     CONTRACTL {
         NOTHROW;
         GC_NOTRIGGER;
-        HOST_NOCALLS;
         SUPPORTS_DAC;
         PRECONDITION(methodRegionInfo != NULL);
     } CONTRACTL_END;
@@ -2614,23 +2516,22 @@ public:
     PTR_RUNTIME_FUNCTION GetFunctionEntry();
     BOOL        IsFunclet()     { WRAPPER_NO_CONTRACT; return GetJitManager()->IsFunclet(this); }
     EECodeInfo  GetMainFunctionInfo();
-    ULONG               GetFixedStackSize();
+#endif // FEATURE_EH_FUNCLETS
 
-#if defined(TARGET_AMD64)
-    BOOL        HasFrameRegister();
-#endif // TARGET_AMD64
-
-#else // FEATURE_EH_FUNCLETS
+#if defined(TARGET_X86)
     ULONG       GetFixedStackSize()
     {
         WRAPPER_NO_CONTRACT;
         return GetCodeManager()->GetFrameSize(GetGCInfoToken());
     }
-#endif // FEATURE_EH_FUNCLETS
+#endif // TARGET_X86
 
 #if defined(TARGET_AMD64)
-    void         GetOffsetsFromUnwindInfo(ULONG* pRSPOffset, ULONG* pRBPOffset);
+    BOOL        HasFrameRegister();
+    ULONG       GetFixedStackSize();
 
+    void         GetOffsetsFromUnwindInfo(ULONG* pRSPOffset, ULONG* pRBPOffset);
+    ULONG        GetFrameOffsetFromUnwindInfo();
 #if defined(_DEBUG) && defined(HAVE_GCCOVER)
     // Find first funclet inside (pvFuncletStart, pvFuncletStart + cbCode)
     static LPVOID findNextFunclet (LPVOID pvFuncletStart, SIZE_T cbCode, LPVOID *ppvFuncletEnd);

@@ -4,26 +4,26 @@
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.CodeAnalysis;
-using Microsoft.CodeAnalysis.CSharp.Testing.XUnit;
+using Microsoft.CodeAnalysis.CSharp.Testing;
 using Microsoft.CodeAnalysis.Diagnostics;
 using Microsoft.CodeAnalysis.Testing;
 
-namespace LibraryImportGenerator.UnitTests.Verifiers
+namespace Microsoft.Interop.UnitTests.Verifiers
 {
     public static class CSharpAnalyzerVerifier<TAnalyzer>
         where TAnalyzer : DiagnosticAnalyzer, new()
     {
         /// <inheritdoc cref="AnalyzerVerifier{TAnalyzer}.Diagnostic()"/>
         public static DiagnosticResult Diagnostic()
-            => AnalyzerVerifier<TAnalyzer>.Diagnostic();
+            => CSharpAnalyzerVerifier<TAnalyzer, DefaultVerifier>.Diagnostic();
 
         /// <inheritdoc cref="AnalyzerVerifier{TAnalyzer}.Diagnostic(string)"/>
         public static DiagnosticResult Diagnostic(string diagnosticId)
-            => AnalyzerVerifier<TAnalyzer>.Diagnostic(diagnosticId);
+            => CSharpAnalyzerVerifier<TAnalyzer, DefaultVerifier>.Diagnostic(diagnosticId);
 
         /// <inheritdoc cref="AnalyzerVerifier{TAnalyzer}.Diagnostic(DiagnosticDescriptor)"/>
         public static DiagnosticResult Diagnostic(DiagnosticDescriptor descriptor)
-            => AnalyzerVerifier<TAnalyzer>.Diagnostic(descriptor);
+            => CSharpAnalyzerVerifier<TAnalyzer, DefaultVerifier>.Diagnostic(descriptor);
 
         /// <inheritdoc cref="AnalyzerVerifier{TAnalyzer}.VerifyAnalyzerAsync(string, DiagnosticResult[])"/>
         public static async Task VerifyAnalyzerAsync(string source, params DiagnosticResult[] expected)

@@ -15,7 +15,11 @@ namespace System.Diagnostics.Metrics
     /// </remarks>
     public sealed class Counter<T> : Instrument<T> where T : struct
     {
-        internal Counter(Meter meter, string name, string? unit, string? description) : base(meter, name, unit, description)
+        internal Counter(Meter meter, string name, string? unit, string? description) : this(meter, name, unit, description, null)
+        {
+        }
+
+        internal Counter(Meter meter, string name, string? unit, string? description, IEnumerable<KeyValuePair<string, object?>>? tags) : base(meter, name, unit, description, tags)
         {
             Publish();
         }
@@ -55,7 +59,7 @@ namespace System.Diagnostics.Metrics
         /// </summary>
         /// <param name="delta">The increment measurement.</param>
         /// <param name="tags">A span of key-value pair tags associated with the measurement.</param>
-        public void Add(T delta, ReadOnlySpan<KeyValuePair<string, object?>> tags) => RecordMeasurement(delta, tags);
+        public void Add(T delta, params ReadOnlySpan<KeyValuePair<string, object?>> tags) => RecordMeasurement(delta, tags);
 
         /// <summary>
         /// Record the increment value of the measurement.

@@ -1,6 +1,7 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using System.Collections.Generic;
 using System.Text.Json.Serialization.Metadata;
 using System.Threading.Tasks;
 
@@ -15,6 +16,8 @@ namespace System.Text.Json.Serialization.Tests
         /// Either JsonSerializerOptions.Default for reflection or the JsonSerializerContext.Options for source gen.
         /// </summary>
         public abstract JsonSerializerOptions DefaultOptions { get; }
+
+        public bool IsSourceGeneratedSerializer => DefaultOptions.TypeInfoResolver is JsonSerializerContext;
 
         /// <summary>
         /// Do the deserialize methods allow a value of 'null'.
@@ -43,53 +46,60 @@ namespace System.Text.Json.Serialization.Tests
         public abstract Task<object> DeserializeWrapper(string json, Type type, JsonSerializerContext context);
 
 
-        public JsonTypeInfo GetTypeInfo(Type type, bool mutable = false)
+        public virtual JsonTypeInfo GetTypeInfo(Type type, JsonSerializerOptions? options = null, bool mutable = false)
         {
-            JsonSerializerOptions defaultOptions = DefaultOptions;
-            // return a fresh mutable instance or the cached readonly metadata
-            return mutable ? defaultOptions.TypeInfoResolver.GetTypeInfo(type, defaultOptions) : defaultOptions.GetTypeInfo(type);
+            options ??= DefaultOptions;
+            options.MakeReadOnly(populateMissingResolver: true);
+            return mutable ? options.TypeInfoResolver.GetTypeInfo(type, options) : options.GetTypeInfo(type);
         }
 
-        public JsonTypeInfo<T> GetTypeInfo<T>(bool mutable = false)
-            => (JsonTypeInfo<T>)GetTypeInfo(typeof(T), mutable);
+        public JsonTypeInfo<T> GetTypeInfo<T>(JsonSerializerOptions? options = null,bool mutable = false)
+            => (JsonTypeInfo<T>)GetTypeInfo(typeof(T), options, mutable);
 
         public JsonSerializerOptions GetDefaultOptionsWithMetadataModifier(Action<JsonTypeInfo> modifier)
         {
             JsonSerializerOptions defaultOptions = DefaultOptions;
             return new JsonSerializerOptions(defaultOptions)
             {
-                TypeInfoResolver = defaultOptions.TypeInfoResolver.WithModifier(modifier)
+                TypeInfoResolver = defaultOptions.TypeInfoResolver.WithAddedModifier(modifier)
             };
         }
-    }
 
-    public static class JsonTypeInfoResolverExtensions
-    {
-        public static IJsonTypeInfoResolver WithModifier(this IJsonTypeInfoResolver resolver, Action<JsonTypeInfo> modifier)
-            => new JsonTypeInfoResolverWithModifier(resolver, modifier);
-
-        private class JsonTypeInfoResolverWithModifier : IJsonTypeInfoResolver
+        public JsonSerializerOptions CreateOptions(
+            Action<JsonSerializerOptions> configure = null,
+            bool? includeFields = false,
+            List<JsonConverter>? customConverters = null,
+            Action<JsonTypeInfo>? modifier = null,
+            bool makeReadOnly = true)
         {
-            private readonly IJsonTypeInfoResolver _source;
-            private readonly Action<JsonTypeInfo> _modifier;
+            var options = new JsonSerializerOptions(DefaultOptions);
 
-            public JsonTypeInfoResolverWithModifier(IJsonTypeInfoResolver source, Action<JsonTypeInfo> modifier)
+            if (includeFields != null)
             {
-                _source = source;
-                _modifier = modifier;
+                options.IncludeFields = includeFields.Value;
             }
 
-            public JsonTypeInfo? GetTypeInfo(Type type, JsonSerializerOptions options)
+            if (modifier != null && options.TypeInfoResolver != null)
             {
-                JsonTypeInfo? typeInfo = _source.GetTypeInfo(type, options);
+                options.TypeInfoResolver = DefaultOptions.TypeInfoResolver.WithAddedModifier(modifier);
+            }
 
-                if (typeInfo != null)
+            if (customConverters != null)
+            {
+                foreach (JsonConverter converter in customConverters)
                 {
-                    _modifier(typeInfo);
+                    options.Converters.Add(converter);
                 }
-
-                return typeInfo;
             }
+
+            configure?.Invoke(options);
+
+            if (makeReadOnly)
+            {
+                options.MakeReadOnly();
+            }
+
+            return options;
         }
     }
 }

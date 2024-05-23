@@ -794,6 +794,7 @@ class DacStreamManager;
 
 #endif // FEATURE_MINIMETADATA_IN_TRIAGEDUMPS
 
+#include "cdac.h"
 
 //----------------------------------------------------------------------------
 //
@@ -816,7 +817,8 @@ class ClrDataAccess
       public ISOSDacInterface10,
       public ISOSDacInterface11,
       public ISOSDacInterface12,
-      public ISOSDacInterface13
+      public ISOSDacInterface13,
+      public ISOSDacInterface14
 {
 public:
     ClrDataAccess(ICorDebugDataTarget * pTarget, ICLRDataTarget * pLegacyTarget=0);
@@ -1207,16 +1209,27 @@ public:
         CLRDATA_ADDRESS *allocLimit);
 
     // ISOSDacInterface13
-    virtual HRESULT STDMETHODCALLTYPE TraverseLoaderHeap(CLRDATA_ADDRESS loaderHeapAddr, LoaderHeapKind kind, VISITHEAP pCallback);        
+    virtual HRESULT STDMETHODCALLTYPE TraverseLoaderHeap(CLRDATA_ADDRESS loaderHeapAddr, LoaderHeapKind kind, VISITHEAP pCallback);
     virtual HRESULT STDMETHODCALLTYPE GetDomainLoaderAllocator(CLRDATA_ADDRESS domainAddress, CLRDATA_ADDRESS *pLoaderAllocator);
     virtual HRESULT STDMETHODCALLTYPE GetLoaderAllocatorHeapNames(int count, const char **ppNames, int *pNeeded);
     virtual HRESULT STDMETHODCALLTYPE GetLoaderAllocatorHeaps(CLRDATA_ADDRESS loaderAllocator, int count, CLRDATA_ADDRESS *pLoaderHeaps, LoaderHeapKind *pKinds, int *pNeeded);
+    virtual HRESULT STDMETHODCALLTYPE GetHandleTableMemoryRegions(ISOSMemoryEnum **ppEnum);
+    virtual HRESULT STDMETHODCALLTYPE GetGCBookkeepingMemoryRegions(ISOSMemoryEnum **ppEnum);
+    virtual HRESULT STDMETHODCALLTYPE GetGCFreeRegions(ISOSMemoryEnum **ppEnum);
+    virtual HRESULT STDMETHODCALLTYPE LockedFlush();
+
+    // ISOSDacInterface14
+    virtual HRESULT STDMETHODCALLTYPE GetStaticBaseAddress(CLRDATA_ADDRESS methodTable, CLRDATA_ADDRESS *nonGCStaticsAddress, CLRDATA_ADDRESS *GCStaticsAddress);
+    virtual HRESULT STDMETHODCALLTYPE GetThreadStaticBaseAddress(CLRDATA_ADDRESS methodTable, CLRDATA_ADDRESS thread, CLRDATA_ADDRESS *nonGCStaticsAddress, CLRDATA_ADDRESS *GCStaticsAddress);
+    virtual HRESULT STDMETHODCALLTYPE GetMethodTableInitializationFlags(CLRDATA_ADDRESS methodTable, MethodTableInitializationFlags *initializationStatus);
 
     //
     // ClrDataAccess.
     //
 
     HRESULT Initialize(void);
+
+    HRESULT GetThreadStoreDataImpl(struct DacpThreadStoreData *data);
 
     BOOL IsExceptionFromManagedCode(EXCEPTION_RECORD * pExceptionRecord);
 #ifndef TARGET_UNIX
@@ -1248,17 +1261,6 @@ public:
         /* [out] */ TADDR* outAddr,
         /* [out] */ union STUB_BUF* outBuffer,
         /* [out] */ ULONG32* outFlags);
-
-    DebuggerJitInfo* GetDebuggerJitInfo(MethodDesc* methodDesc,
-                                        TADDR addr)
-    {
-        if (g_pDebugger)
-        {
-            return g_pDebugger->GetJitInfo(methodDesc, (PBYTE)addr, NULL);
-        }
-
-        return NULL;
-    }
 
     HRESULT GetMethodExtents(MethodDesc* methodDesc,
                              METH_EXTENTS** extents);
@@ -1414,6 +1416,10 @@ public:
     DacInstanceManager m_instances;
     ULONG32 m_instanceAge;
     bool m_debugMode;
+
+    CDAC m_cdac;
+    NonVMComHolder<ISOSDacInterface> m_cdacSos;
+    NonVMComHolder<ISOSDacInterface9> m_cdacSos9;
 
 #ifdef FEATURE_MINIMETADATA_IN_TRIAGEDUMPS
 
@@ -1954,6 +1960,56 @@ class DacReferenceList
         unsigned int _capacity;
 };
 
+
+class DacMemoryEnumerator : public DefaultCOMImpl<ISOSMemoryEnum, IID_ISOSMemoryEnum>
+{
+public:
+    DacMemoryEnumerator()
+        : mIteratorIndex(0)
+    {
+    }
+
+    virtual ~DacMemoryEnumerator() {}
+    virtual HRESULT Init() = 0;
+
+    HRESULT STDMETHODCALLTYPE Skip(unsigned int count);
+    HRESULT STDMETHODCALLTYPE Reset();
+    HRESULT STDMETHODCALLTYPE GetCount(unsigned int *pCount);
+    HRESULT STDMETHODCALLTYPE Next(unsigned int count,
+                                   SOSMemoryRegion regions[],
+                                   unsigned int *pFetched);
+
+protected:
+    DacReferenceList<SOSMemoryRegion> mRegions;
+
+private:
+    unsigned int mIteratorIndex;
+};
+
+class DacHandleTableMemoryEnumerator : public DacMemoryEnumerator
+{
+public:
+    virtual HRESULT Init();
+};
+
+class DacGCBookkeepingEnumerator : public DacMemoryEnumerator
+{
+public:
+    virtual HRESULT Init();
+};
+
+class DacFreeRegionEnumerator : public DacMemoryEnumerator
+{
+public:
+    virtual HRESULT Init();
+
+private:
+    void AddSingleSegment(const dac_heap_segment &seg, FreeRegionKind kind, int heap);
+    void AddSegmentList(DPTR(dac_heap_segment) seg, FreeRegionKind kind, int heap = 0);
+    void AddFreeList(DPTR(dac_region_free_list) freeList, FreeRegionKind kind);
+    void AddServerRegions();
+};
+
 struct DacGcReference;
  /* DacStackReferenceWalker.
  */
@@ -2074,7 +2130,7 @@ private:
     void WalkHandles();
     static inline bool IsAlwaysStrongReference(unsigned int type)
     {
-        return type == HNDTYPE_STRONG || type == HNDTYPE_PINNED || type == HNDTYPE_ASYNCPINNED || type == HNDTYPE_SIZEDREF;
+        return type == HNDTYPE_STRONG || type == HNDTYPE_PINNED || type == HNDTYPE_SIZEDREF;
     }
 
 private:
@@ -3350,7 +3406,7 @@ private:
 //----------------------------------------------------------------------------
 
 #ifdef FEATURE_EH_FUNCLETS
-typedef ExceptionTracker ClrDataExStateType;
+typedef ExceptionTrackerBase ClrDataExStateType;
 #else // FEATURE_EH_FUNCLETS
 typedef ExInfo ClrDataExStateType;
 #endif // FEATURE_EH_FUNCLETS
@@ -3804,7 +3860,7 @@ HRESULT GetServerHeaps(CLRDATA_ADDRESS pGCHeaps[], ICorDebugDataTarget* pTarget)
 
 #pragma warning( disable: 4035 )        /* Don't complain about lack of return value */
 
-__inline unsigned __int64 GetCycleCount ()
+__inline uint64_t GetCycleCount ()
 {
 __asm   _emit   0x0F
 __asm   _emit   0x31    /* rdtsc */
@@ -3828,7 +3884,7 @@ __asm   pop     EDX
 
 #define CCNT_OVERHEAD    0 // Don't know
 
-__inline unsigned __int64 GetCycleCount()
+__inline uint64_t GetCycleCount()
 {
     LIMITED_METHOD_CONTRACT;
 
@@ -3839,16 +3895,16 @@ __inline unsigned __int64 GetCycleCount()
 
 #endif  // #if defined(TARGET_X86)
 
-extern unsigned __int64 g_nTotalTime;
-extern unsigned __int64 g_nStackTotalTime;
-extern unsigned __int64 g_nReadVirtualTotalTime;
-extern unsigned __int64 g_nFindTotalTime;
-extern unsigned __int64 g_nFindHashTotalTime;
-extern unsigned __int64 g_nFindHits;
-extern unsigned __int64 g_nFindCalls;
-extern unsigned __int64 g_nFindFails;
-extern unsigned __int64 g_nStackWalk;
-extern unsigned __int64 g_nFindStackTotalTime;
+extern uint64_t g_nTotalTime;
+extern uint64_t g_nStackTotalTime;
+extern uint64_t g_nReadVirtualTotalTime;
+extern uint64_t g_nFindTotalTime;
+extern uint64_t g_nFindHashTotalTime;
+extern uint64_t g_nFindHits;
+extern uint64_t g_nFindCalls;
+extern uint64_t g_nFindFails;
+extern uint64_t g_nStackWalk;
+extern uint64_t g_nFindStackTotalTime;
 
 #endif // #if defined(DAC_MEASURE_PERF)
 

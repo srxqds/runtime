@@ -46,7 +46,7 @@ int LinearScan::BuildNode(GenTree* tree)
 {
     assert(!tree->isContained());
     int       srcCount;
-    int       dstCount      = 0;
+    int       dstCount;
     regMaskTP killMask      = RBM_NONE;
     bool      isLocalDefUse = false;
 
@@ -138,14 +138,14 @@ int LinearScan::BuildNode(GenTree* tree)
             // This kills GC refs in callee save regs
             srcCount = 0;
             assert(dstCount == 0);
-            BuildDefsWithKills(tree, 0, RBM_NONE, RBM_NONE);
+            BuildKills(tree, RBM_NONE);
             break;
 
         case GT_PROF_HOOK:
             srcCount = 0;
             assert(dstCount == 0);
             killMask = getKillSetForProfilerHook();
-            BuildDefsWithKills(tree, 0, RBM_NONE, killMask);
+            BuildKills(tree, killMask);
             break;
 
         case GT_CNS_INT:
@@ -154,12 +154,14 @@ int LinearScan::BuildNode(GenTree* tree)
         case GT_CNS_VEC:
         {
             srcCount = 0;
+
             assert(dstCount == 1);
             assert(!tree->IsReuseRegVal());
-            RefPosition* def               = BuildDef(tree, BuildEvexIncompatibleMask(tree));
+
+            RefPosition* def               = BuildDef(tree);
             def->getInterval()->isConstant = true;
+            break;
         }
-        break;
 
 #if !defined(TARGET_64BIT)
 
@@ -188,8 +190,18 @@ int LinearScan::BuildNode(GenTree* tree)
         case GT_RETURN:
             srcCount = BuildReturn(tree);
             killMask = getKillSetForReturn();
-            BuildDefsWithKills(tree, 0, RBM_NONE, killMask);
+            BuildKills(tree, killMask);
             break;
+
+#ifdef SWIFT_SUPPORT
+        case GT_SWIFT_ERROR_RET:
+            BuildUse(tree->gtGetOp1(), RBM_SWIFT_ERROR);
+            // Plus one for error register
+            srcCount = BuildReturn(tree) + 1;
+            killMask = getKillSetForReturn();
+            BuildKills(tree, killMask);
+            break;
+#endif // SWIFT_SUPPORT
 
         case GT_RETFILT:
             assert(dstCount == 0);
@@ -205,22 +217,10 @@ int LinearScan::BuildNode(GenTree* tree)
             }
             break;
 
-        // A GT_NOP is either a passthrough (if it is void, or if it has
-        // a child), but must be considered to produce a dummy value if it
-        // has a type but no child
         case GT_NOP:
             srcCount = 0;
-            assert((tree->gtGetOp1() == nullptr) || tree->isContained());
-            if (tree->TypeGet() != TYP_VOID && tree->gtGetOp1() == nullptr)
-            {
-                assert(dstCount == 1);
-                BuildUse(tree->gtGetOp1());
-                BuildDef(tree);
-            }
-            else
-            {
-                assert(dstCount == 0);
-            }
+            assert(tree->TypeIs(TYP_VOID));
+            assert(dstCount == 0);
             break;
 
         case GT_KEEPALIVE:
@@ -283,11 +283,6 @@ int LinearScan::BuildNode(GenTree* tree)
         }
         break;
 
-        case GT_ASG:
-            noway_assert(!"We should never hit any assignment operator in lowering");
-            srcCount = 0;
-            break;
-
 #if !defined(TARGET_64BIT)
         case GT_ADD_LO:
         case GT_ADD_HI:
@@ -311,7 +306,7 @@ int LinearScan::BuildNode(GenTree* tree)
             srcCount                 = BuildOperandUses(tree->gtGetOp1());
             buildInternalRegisterUses();
             killMask = compiler->compHelperCallKillSet(CORINFO_HELP_STOP_FOR_GC);
-            BuildDefsWithKills(tree, 0, RBM_NONE, killMask);
+            BuildKills(tree, killMask);
         }
         break;
 
@@ -440,17 +435,42 @@ int LinearScan::BuildNode(GenTree* tree)
             srcCount = 3;
             assert(dstCount == 1);
 
+            GenTree* addr      = tree->AsCmpXchg()->Addr();
+            GenTree* data      = tree->AsCmpXchg()->Data();
+            GenTree* comparand = tree->AsCmpXchg()->Comparand();
+
             // Comparand is preferenced to RAX.
             // The remaining two operands can be in any reg other than RAX.
-            BuildUse(tree->AsCmpXchg()->gtOpLocation, availableIntRegs & ~RBM_RAX);
-            BuildUse(tree->AsCmpXchg()->gtOpValue, availableIntRegs & ~RBM_RAX);
-            BuildUse(tree->AsCmpXchg()->gtOpComparand, RBM_RAX);
+
+            const regMaskTP nonRaxCandidates = availableIntRegs & ~RBM_RAX;
+            BuildUse(addr, nonRaxCandidates);
+            BuildUse(data, varTypeIsByte(tree) ? (nonRaxCandidates & RBM_BYTE_REGS) : nonRaxCandidates);
+            BuildUse(comparand, RBM_RAX);
             BuildDef(tree, RBM_RAX);
         }
         break;
 
         case GT_XORR:
         case GT_XAND:
+            if (!tree->IsUnusedValue())
+            {
+                GenTree* addr = tree->gtGetOp1();
+                GenTree* data = tree->gtGetOp2();
+
+                // These don't support byte operands.
+                assert(!varTypeIsByte(data));
+
+                // if tree's value is used, we'll emit a cmpxchg-loop idiom (requires RAX)
+                buildInternalIntRegisterDefForNode(tree, availableIntRegs & ~RBM_RAX);
+                BuildUse(addr, availableIntRegs & ~RBM_RAX);
+                BuildUse(data, availableIntRegs & ~RBM_RAX);
+                BuildDef(tree, RBM_RAX);
+                buildInternalRegisterUses();
+                srcCount = 2;
+                assert(dstCount == 1);
+                break;
+            }
+            FALLTHROUGH;
         case GT_XADD:
         case GT_XCHG:
         {
@@ -465,7 +485,7 @@ int LinearScan::BuildNode(GenTree* tree)
             setDelayFree(addrUse);
             tgtPrefUse = addrUse;
             assert(!data->isContained());
-            BuildUse(data);
+            BuildUse(data, varTypeIsByte(tree) ? RBM_BYTE_REGS : RBM_NONE);
             srcCount = 2;
             assert(dstCount == 1);
             BuildDef(tree);
@@ -484,7 +504,6 @@ int LinearScan::BuildNode(GenTree* tree)
             }
             break;
 
-        case GT_OBJ:
         case GT_BLK:
             // These should all be eliminated prior to Lowering.
             assert(!"Non-store block node in Lowering");
@@ -498,8 +517,6 @@ int LinearScan::BuildNode(GenTree* tree)
 #endif // FEATURE_PUT_STRUCT_ARG_STK
 
         case GT_STORE_BLK:
-        case GT_STORE_OBJ:
-        case GT_STORE_DYN_BLK:
             srcCount = BuildBlockStore(tree->AsBlk());
             break;
 
@@ -521,54 +538,10 @@ int LinearScan::BuildNode(GenTree* tree)
             break;
 
         case GT_ARR_ELEM:
-            // These must have been lowered to GT_ARR_INDEX
+            // These must have been lowered
             noway_assert(!"We should never see a GT_ARR_ELEM after Lowering.");
             srcCount = 0;
             break;
-
-        case GT_ARR_INDEX:
-        {
-            srcCount = 2;
-            assert(dstCount == 1);
-            assert(!tree->AsArrIndex()->ArrObj()->isContained());
-            assert(!tree->AsArrIndex()->IndexExpr()->isContained());
-            // For GT_ARR_INDEX, the lifetime of the arrObj must be extended because it is actually used multiple
-            // times while the result is being computed.
-            RefPosition* arrObjUse = BuildUse(tree->AsArrIndex()->ArrObj());
-            setDelayFree(arrObjUse);
-            BuildUse(tree->AsArrIndex()->IndexExpr());
-            BuildDef(tree);
-        }
-        break;
-
-        case GT_ARR_OFFSET:
-        {
-            // This consumes the offset, if any, the arrObj and the effective index,
-            // and produces the flattened offset for this dimension.
-            assert(dstCount == 1);
-            srcCount                 = 0;
-            RefPosition* internalDef = nullptr;
-            if (tree->AsArrOffs()->gtOffset->isContained())
-            {
-                srcCount = 2;
-            }
-            else
-            {
-                // Here we simply need an internal register, which must be different
-                // from any of the operand's registers, but may be the same as targetReg.
-                srcCount    = 3;
-                internalDef = buildInternalIntRegisterDefForNode(tree);
-                BuildUse(tree->AsArrOffs()->gtOffset);
-            }
-            BuildUse(tree->AsArrOffs()->gtIndex);
-            BuildUse(tree->AsArrOffs()->gtArrObj);
-            if (internalDef != nullptr)
-            {
-                buildInternalRegisterUses();
-            }
-            BuildDef(tree);
-        }
-        break;
 
         case GT_LEA:
             // The LEA usually passes its operands through to the GT_IND, in which case it will
@@ -627,7 +600,7 @@ int LinearScan::BuildNode(GenTree* tree)
             BuildDef(tree, RBM_EXCEPTION_OBJECT);
             break;
 
-#if !defined(FEATURE_EH_FUNCLETS)
+#if defined(FEATURE_EH_WINDOWS_X86)
         case GT_END_LFIN:
             srcCount = 0;
             assert(dstCount == 0);
@@ -669,11 +642,24 @@ int LinearScan::BuildNode(GenTree* tree)
         }
         break;
 
+#ifdef SWIFT_SUPPORT
+        case GT_SWIFT_ERROR:
+            srcCount = 0;
+            assert(dstCount == 1);
+
+            // Any register should do here, but the error register value should immediately
+            // be moved from GT_SWIFT_ERROR's destination register to the SwiftError struct,
+            // and we know REG_SWIFT_ERROR should be busy up to this point, anyway.
+            // By forcing LSRA to use REG_SWIFT_ERROR as both the source and destination register,
+            // we can ensure the redundant move is elided.
+            BuildDef(tree, RBM_SWIFT_ERROR);
+            break;
+#endif // SWIFT_SUPPORT
+
     } // end switch (tree->OperGet())
 
     // We need to be sure that we've set srcCount and dstCount appropriately.
-    // Not that for XARCH, the maximum number of registers defined is 2.
-    assert((dstCount < 2) || ((dstCount == 2) && tree->IsMultiRegNode()));
+    assert((dstCount < 2) || tree->IsMultiRegNode());
     assert(isLocalDefUse == (tree->IsValue() && tree->IsUnusedValue()));
     assert(!tree->IsValue() || (dstCount != 0));
     assert(dstCount == tree->GetRegisterDstCount(compiler));
@@ -734,7 +720,6 @@ bool LinearScan::isRMWRegOper(GenTree* tree)
 {
     // TODO-XArch-CQ: Make this more accurate.
     // For now, We assume that most binary operators are of the RMW form.
-    CLANG_FORMAT_COMMENT_ANCHOR;
 
 #ifdef FEATURE_HW_INTRINSICS
     assert(tree->OperIsBinary() || (tree->OperIsMultiOp() && (tree->AsMultiOp()->GetOperandCount() <= 2)));
@@ -752,14 +737,13 @@ bool LinearScan::isRMWRegOper(GenTree* tree)
         // These Opers either support a three op form (i.e. GT_LEA), or do not read/write their first operand
         case GT_LEA:
         case GT_STOREIND:
-        case GT_ARR_INDEX:
         case GT_STORE_BLK:
-        case GT_STORE_OBJ:
         case GT_SWITCH_TABLE:
         case GT_LOCKADD:
 #ifdef TARGET_X86
         case GT_LONG:
 #endif
+        case GT_SWIFT_ERROR_RET:
             return false;
 
         case GT_ADD:
@@ -771,6 +755,10 @@ bool LinearScan::isRMWRegOper(GenTree* tree)
 
         // x86/x64 does support a three op multiply when op2|op1 is a contained immediate
         case GT_MUL:
+#ifdef TARGET_X86
+        case GT_SUB_HI:
+        case GT_LSH_HI:
+#endif
         {
             if (varTypeIsFloating(tree->TypeGet()))
             {
@@ -1091,7 +1079,6 @@ int LinearScan::BuildShiftRotate(GenTree* tree)
     // TODO-CQ-XARCH: We can optimize generating 'test' instruction for GT_EQ/NE(shift, 0)
     // if the shift count is known to be non-zero and in the range depending on the
     // operand size.
-    CLANG_FORMAT_COMMENT_ANCHOR;
 
 #ifdef TARGET_X86
     // The first operand of a GT_LSH_HI and GT_RSH_LO oper is a GT_LONG so that
@@ -1160,11 +1147,11 @@ int LinearScan::BuildShiftRotate(GenTree* tree)
 //
 int LinearScan::BuildCall(GenTreeCall* call)
 {
-    bool                  hasMultiRegRetVal = false;
-    const ReturnTypeDesc* retTypeDesc       = nullptr;
-    int                   srcCount          = 0;
-    int                   dstCount          = 0;
-    regMaskTP             dstCandidates     = RBM_NONE;
+    bool                  hasMultiRegRetVal   = false;
+    const ReturnTypeDesc* retTypeDesc         = nullptr;
+    int                   srcCount            = 0;
+    int                   dstCount            = 0;
+    regMaskTP             singleDstCandidates = RBM_NONE;
 
     assert(!call->isContained());
     if (call->TypeGet() != TYP_VOID)
@@ -1191,7 +1178,6 @@ int LinearScan::BuildCall(GenTreeCall* call)
     RegisterType registerType = regType(call);
 
     // Set destination candidates for return value of the call.
-    CLANG_FORMAT_COMMENT_ANCHOR;
 
 #ifdef TARGET_X86
     if (call->IsHelperCall(compiler, CORINFO_HELP_INIT_PINVOKE_FRAME))
@@ -1199,38 +1185,35 @@ int LinearScan::BuildCall(GenTreeCall* call)
         // The x86 CORINFO_HELP_INIT_PINVOKE_FRAME helper uses a custom calling convention that returns with
         // TCB in REG_PINVOKE_TCB. AMD64/ARM64 use the standard calling convention. fgMorphCall() sets the
         // correct argument registers.
-        dstCandidates = RBM_PINVOKE_TCB;
+        singleDstCandidates = RBM_PINVOKE_TCB;
     }
     else
 #endif // TARGET_X86
-        if (hasMultiRegRetVal)
-    {
-        assert(retTypeDesc != nullptr);
-        dstCandidates = retTypeDesc->GetABIReturnRegs();
-        assert((int)genCountBits(dstCandidates) == dstCount);
-    }
-    else if (varTypeUsesFloatReg(registerType))
-    {
+        if (!hasMultiRegRetVal)
+        {
+            if (varTypeUsesFloatReg(registerType))
+            {
 #ifdef TARGET_X86
-        // The return value will be on the X87 stack, and we will need to move it.
-        dstCandidates = allRegs(registerType);
+                // The return value will be on the X87 stack, and we will need to move it.
+                singleDstCandidates = allRegs(registerType);
 #else  // !TARGET_X86
-        dstCandidates                     = RBM_FLOATRET;
+            singleDstCandidates = RBM_FLOATRET;
 #endif // !TARGET_X86
-    }
-    else
-    {
-        assert(varTypeUsesIntReg(registerType));
+            }
+            else
+            {
+                assert(varTypeUsesIntReg(registerType));
 
-        if (registerType == TYP_LONG)
-        {
-            dstCandidates = RBM_LNGRET;
+                if (registerType == TYP_LONG)
+                {
+                    singleDstCandidates = RBM_LNGRET;
+                }
+                else
+                {
+                    singleDstCandidates = RBM_INTRET;
+                }
+            }
         }
-        else
-        {
-            dstCandidates = RBM_INTRET;
-        }
-    }
 
     // number of args to a call =
     // callRegArgs + (callargs - placeholders, setup, etc)
@@ -1301,12 +1284,12 @@ int LinearScan::BuildCall(GenTreeCall* call)
 #ifdef FEATURE_PUT_STRUCT_ARG_STK
             // If the node is TYP_STRUCT and it is put on stack with
             // putarg_stk operation, we consume and produce no registers.
-            // In this case the embedded Obj node should not produce
+            // In this case the embedded Blk node should not produce
             // registers too since it is contained.
             // Note that if it is a SIMD type the argument will be in a register.
             if (argNode->TypeGet() == TYP_STRUCT)
             {
-                assert(argNode->gtGetOp1() != nullptr && argNode->gtGetOp1()->OperGet() == GT_OBJ);
+                assert(argNode->gtGetOp1() != nullptr && argNode->gtGetOp1()->OperGet() == GT_BLK);
                 assert(argNode->gtGetOp1()->isContained());
             }
 #endif // FEATURE_PUT_STRUCT_ARG_STK
@@ -1316,7 +1299,7 @@ int LinearScan::BuildCall(GenTreeCall* call)
         if (argNode->OperGet() == GT_FIELD_LIST)
         {
             assert(argNode->isContained());
-            assert(varTypeIsStruct(argNode) || abiInfo.IsStruct);
+            assert(varTypeIsStruct(arg.GetSignatureType()));
 
             unsigned regIndex = 0;
             for (GenTreeFieldList::Use& use : argNode->AsFieldList()->Uses())
@@ -1375,11 +1358,46 @@ int LinearScan::BuildCall(GenTreeCall* call)
         srcCount += BuildOperandUses(ctrlExpr, ctrlExprCandidates);
     }
 
+    if (call->NeedsVzeroupper(compiler))
+    {
+        // Much like for Contains256bitOrMoreAVX, we want to track if any
+        // call needs a vzeroupper inserted. This allows us to reduce
+        // the total number of vzeroupper being inserted for cases where
+        // no 256+ AVX is used directly by the method.
+
+        compiler->GetEmitter()->SetContainsCallNeedingVzeroupper(true);
+    }
+
     buildInternalRegisterUses();
 
     // Now generate defs and kills.
     regMaskTP killMask = getKillSetForCall(call);
-    BuildDefsWithKills(call, dstCount, dstCandidates, killMask);
+    if (dstCount > 0)
+    {
+        if (hasMultiRegRetVal)
+        {
+            assert(retTypeDesc != nullptr);
+            regMaskTP multiDstCandidates = retTypeDesc->GetABIReturnRegs(call->GetUnmanagedCallConv());
+            assert((int)genCountBits(multiDstCandidates) == dstCount);
+            BuildCallDefsWithKills(call, dstCount, multiDstCandidates, killMask);
+        }
+        else
+        {
+            assert(dstCount == 1);
+            BuildDefWithKills(call, dstCount, singleDstCandidates, killMask);
+        }
+    }
+    else
+    {
+        BuildKills(call, killMask);
+    }
+
+#ifdef SWIFT_SUPPORT
+    if (call->HasSwiftErrorHandling())
+    {
+        MarkSwiftErrorBusyForCall(call);
+    }
+#endif // SWIFT_SUPPORT
 
     // No args are placed in registers anymore.
     placedArgRegs      = RBM_NONE;
@@ -1427,12 +1445,31 @@ int LinearScan::BuildBlockStore(GenTreeBlk* blkNode)
         {
             case GenTreeBlk::BlkOpKindUnroll:
             {
-#ifdef TARGET_AMD64
-                const bool canUse16BytesSimdMov = !blkNode->IsOnHeapAndContainsReferences();
-                const bool willUseSimdMov       = canUse16BytesSimdMov && (size >= 16);
-#else
-                const bool willUseSimdMov = (size >= 16);
-#endif
+                bool willUseSimdMov = compiler->IsBaselineSimdIsaSupported() && (size >= XMM_REGSIZE_BYTES);
+                if (willUseSimdMov && blkNode->IsOnHeapAndContainsReferences())
+                {
+                    ClassLayout* layout = blkNode->GetLayout();
+
+                    unsigned xmmCandidates   = 0;
+                    unsigned continuousNonGc = 0;
+                    for (unsigned slot = 0; slot < layout->GetSlotCount(); slot++)
+                    {
+                        if (layout->IsGCPtr(slot))
+                        {
+                            xmmCandidates += ((continuousNonGc * TARGET_POINTER_SIZE) / XMM_REGSIZE_BYTES);
+                            continuousNonGc = 0;
+                        }
+                        else
+                        {
+                            continuousNonGc++;
+                        }
+                    }
+                    xmmCandidates += ((continuousNonGc * TARGET_POINTER_SIZE) / XMM_REGSIZE_BYTES);
+
+                    // Just one XMM candidate is not profitable
+                    willUseSimdMov = xmmCandidates > 1;
+                }
+
                 if (willUseSimdMov)
                 {
                     buildInternalFloatRegisterDefForNode(blkNode, internalFloatRegCandidates());
@@ -1455,13 +1492,10 @@ int LinearScan::BuildBlockStore(GenTreeBlk* blkNode)
                 sizeRegMask    = RBM_RCX;
                 break;
 
-#ifdef TARGET_AMD64
-            case GenTreeBlk::BlkOpKindHelper:
-                dstAddrRegMask = RBM_ARG_0;
-                srcRegMask     = RBM_ARG_1;
-                sizeRegMask    = RBM_ARG_2;
+            case GenTreeBlk::BlkOpKindLoop:
+                // Needed for offsetReg
+                buildInternalIntRegisterDefForNode(blkNode, availableIntRegs);
                 break;
-#endif
 
             default:
                 unreached();
@@ -1475,121 +1509,116 @@ int LinearScan::BuildBlockStore(GenTreeBlk* blkNode)
             srcAddrOrFill = src->AsIndir()->Addr();
         }
 
-        if (blkNode->OperIs(GT_STORE_OBJ))
+        switch (blkNode->gtBlkOpKind)
         {
-            if (blkNode->gtBlkOpKind == GenTreeBlk::BlkOpKindRepInstr)
-            {
+            case GenTreeBlk::BlkOpKindCpObjRepInstr:
                 // We need the size of the contiguous Non-GC-region to be in RCX to call rep movsq.
                 sizeRegMask = RBM_RCX;
-            }
+                FALLTHROUGH;
 
-            // The srcAddr must be in a register.  If it was under a GT_IND, we need to subsume all of its
-            // sources.
-            dstAddrRegMask = RBM_RDI;
-            srcRegMask     = RBM_RSI;
-        }
-        else
-        {
-            switch (blkNode->gtBlkOpKind)
-            {
-                case GenTreeBlk::BlkOpKindUnroll:
-                    if ((size % XMM_REGSIZE_BYTES) != 0)
-                    {
-                        regMaskTP regMask = availableIntRegs;
-#ifdef TARGET_X86
-                        if ((size & 1) != 0)
-                        {
-                            // We'll need to store a byte so a byte register is needed on x86.
-                            regMask        = allByteRegs();
-                            internalIsByte = true;
-                        }
-#endif
-                        internalIntDef = buildInternalIntRegisterDefForNode(blkNode, regMask);
-                    }
-
-                    if (size >= XMM_REGSIZE_BYTES)
-                    {
-                        buildInternalFloatRegisterDefForNode(blkNode, internalFloatRegCandidates());
-                        SetContainsAVXFlags(size);
-                    }
-                    break;
-
-                case GenTreeBlk::BlkOpKindUnrollMemmove:
-                {
-                    // Prepare SIMD/GPR registers needed to perform an unrolled memmove. The idea that
-                    // we can ignore the fact that src and dst might overlap if we save the whole src
-                    // to temp regs in advance, e.g. for memmove(dst: rcx, src: rax, len: 120):
-                    //
-                    //       vmovdqu  ymm0, ymmword ptr[rax +  0]
-                    //       vmovdqu  ymm1, ymmword ptr[rax + 32]
-                    //       vmovdqu  ymm2, ymmword ptr[rax + 64]
-                    //       vmovdqu  ymm3, ymmword ptr[rax + 88]
-                    //       vmovdqu  ymmword ptr[rcx +  0], ymm0
-                    //       vmovdqu  ymmword ptr[rcx + 32], ymm1
-                    //       vmovdqu  ymmword ptr[rcx + 64], ymm2
-                    //       vmovdqu  ymmword ptr[rcx + 88], ymm3
-                    //
-
-                    // Not yet finished for x86
-                    assert(TARGET_POINTER_SIZE == 8);
-
-                    // Lowering was expected to get rid of memmove in case of zero
-                    assert(size > 0);
-
-                    // TODO-XARCH-AVX512: Consider enabling it here
-                    unsigned simdSize =
-                        (size >= YMM_REGSIZE_BYTES) && compiler->compOpportunisticallyDependsOn(InstructionSet_AVX)
-                            ? YMM_REGSIZE_BYTES
-                            : XMM_REGSIZE_BYTES;
-
-                    if (size >= simdSize)
-                    {
-                        unsigned simdRegs = size / simdSize;
-                        if ((size % simdSize) != 0)
-                        {
-                            // TODO-CQ: Consider using GPR load/store here if the reminder is 1,2,4 or 8
-                            // especially if we enable AVX-512
-                            simdRegs++;
-                        }
-                        for (unsigned i = 0; i < simdRegs; i++)
-                        {
-                            // It's too late to revert the unrolling so we hope we'll have enough SIMD regs
-                            // no more than MaxInternalCount. Currently, it's controlled by getUnrollThreshold(memmove)
-                            buildInternalFloatRegisterDefForNode(blkNode, internalFloatRegCandidates());
-                        }
-                        SetContainsAVXFlags();
-                    }
-                    else if (isPow2(size))
-                    {
-                        // Single GPR for 1,2,4,8
-                        buildInternalIntRegisterDefForNode(blkNode, availableIntRegs);
-                    }
-                    else
-                    {
-                        // Any size from 3 to 15 can be handled via two GPRs
-                        buildInternalIntRegisterDefForNode(blkNode, availableIntRegs);
-                        buildInternalIntRegisterDefForNode(blkNode, availableIntRegs);
-                    }
-                }
+            case GenTreeBlk::BlkOpKindCpObjUnroll:
+                // The srcAddr must be in a register. If it was under a GT_IND, we need to subsume all of its sources.
+                dstAddrRegMask = RBM_RDI;
+                srcRegMask     = RBM_RSI;
                 break;
 
-                case GenTreeBlk::BlkOpKindRepInstr:
-                    dstAddrRegMask = RBM_RDI;
-                    srcRegMask     = RBM_RSI;
-                    sizeRegMask    = RBM_RCX;
-                    break;
+            case GenTreeBlk::BlkOpKindUnroll:
+            {
+                unsigned regSize   = compiler->roundDownSIMDSize(size);
+                unsigned remainder = size;
 
-#ifdef TARGET_AMD64
-                case GenTreeBlk::BlkOpKindHelper:
-                    dstAddrRegMask = RBM_ARG_0;
-                    srcRegMask     = RBM_ARG_1;
-                    sizeRegMask    = RBM_ARG_2;
-                    break;
+                if ((size >= regSize) && (regSize > 0))
+                {
+                    // We need a float temporary if we're doing SIMD operations
+
+                    buildInternalFloatRegisterDefForNode(blkNode, internalFloatRegCandidates());
+                    SetContainsAVXFlags(regSize);
+
+                    remainder %= regSize;
+                }
+
+                if ((remainder > 0) && ((regSize == 0) || (isPow2(remainder) && (remainder <= REGSIZE_BYTES))))
+                {
+                    // We need an int temporary if we're not doing SIMD operations
+                    // or if are but the remainder is a power of 2 and less than the
+                    // size of a register
+
+                    regMaskTP regMask = availableIntRegs;
+#ifdef TARGET_X86
+                    if ((size & 1) != 0)
+                    {
+                        // We'll need to store a byte so a byte register is needed on x86.
+                        regMask        = allByteRegs();
+                        internalIsByte = true;
+                    }
 #endif
-
-                default:
-                    unreached();
+                    internalIntDef = buildInternalIntRegisterDefForNode(blkNode, regMask);
+                }
+                break;
             }
+
+            case GenTreeBlk::BlkOpKindUnrollMemmove:
+            {
+                // Prepare SIMD/GPR registers needed to perform an unrolled memmove. The idea that
+                // we can ignore the fact that src and dst might overlap if we save the whole src
+                // to temp regs in advance, e.g. for memmove(dst: rcx, src: rax, len: 120):
+                //
+                //       vmovdqu  ymm0, ymmword ptr[rax +  0]
+                //       vmovdqu  ymm1, ymmword ptr[rax + 32]
+                //       vmovdqu  ymm2, ymmword ptr[rax + 64]
+                //       vmovdqu  ymm3, ymmword ptr[rax + 88]
+                //       vmovdqu  ymmword ptr[rcx +  0], ymm0
+                //       vmovdqu  ymmword ptr[rcx + 32], ymm1
+                //       vmovdqu  ymmword ptr[rcx + 64], ymm2
+                //       vmovdqu  ymmword ptr[rcx + 88], ymm3
+                //
+
+                // Not yet finished for x86
+                assert(TARGET_POINTER_SIZE == 8);
+
+                // Lowering was expected to get rid of memmove in case of zero
+                assert(size > 0);
+
+                const unsigned simdSize = compiler->roundDownSIMDSize(size);
+                if ((size >= simdSize) && (simdSize > 0))
+                {
+                    unsigned simdRegs = size / simdSize;
+                    if ((size % simdSize) != 0)
+                    {
+                        // TODO-CQ: Consider using GPR load/store here if the reminder is 1,2,4 or 8
+                        // especially if we enable AVX-512
+                        simdRegs++;
+                    }
+                    for (unsigned i = 0; i < simdRegs; i++)
+                    {
+                        // It's too late to revert the unrolling so we hope we'll have enough SIMD regs
+                        // no more than MaxInternalCount. Currently, it's controlled by getUnrollThreshold(memmove)
+                        buildInternalFloatRegisterDefForNode(blkNode, internalFloatRegCandidates());
+                    }
+                    SetContainsAVXFlags();
+                }
+                else if (isPow2(size))
+                {
+                    // Single GPR for 1,2,4,8
+                    buildInternalIntRegisterDefForNode(blkNode, availableIntRegs);
+                }
+                else
+                {
+                    // Any size from 3 to 15 can be handled via two GPRs
+                    buildInternalIntRegisterDefForNode(blkNode, availableIntRegs);
+                    buildInternalIntRegisterDefForNode(blkNode, availableIntRegs);
+                }
+            }
+            break;
+
+            case GenTreeBlk::BlkOpKindRepInstr:
+                dstAddrRegMask = RBM_RDI;
+                srcRegMask     = RBM_RSI;
+                sizeRegMask    = RBM_RCX;
+                break;
+
+            default:
+                unreached();
         }
 
         if ((srcAddrOrFill == nullptr) && (srcRegMask != RBM_NONE))
@@ -1600,7 +1629,7 @@ int LinearScan::BuildBlockStore(GenTreeBlk* blkNode)
         }
     }
 
-    if (!blkNode->OperIs(GT_STORE_DYN_BLK) && (sizeRegMask != RBM_NONE))
+    if (sizeRegMask != RBM_NONE)
     {
         // Reserve a temp register for the block size argument.
         buildInternalIntRegisterDefForNode(blkNode, sizeRegMask);
@@ -1631,12 +1660,6 @@ int LinearScan::BuildBlockStore(GenTreeBlk* blkNode)
         }
     }
 
-    if (blkNode->OperIs(GT_STORE_DYN_BLK))
-    {
-        useCount++;
-        BuildUse(blkNode->AsStoreDynBlk()->gtDynamicSize, sizeRegMask);
-    }
-
 #ifdef TARGET_X86
     // If we require a byte register on x86, we may run into an over-constrained situation
     // if we have BYTE_REG_COUNT or more uses (currently, it can be at most 4, if both the
@@ -1659,7 +1682,7 @@ int LinearScan::BuildBlockStore(GenTreeBlk* blkNode)
 
     buildInternalRegisterUses();
     regMaskTP killMask = getKillSetForBlockStore(blkNode);
-    BuildDefsWithKills(blkNode, 0, RBM_NONE, killMask);
+    BuildKills(blkNode, killMask);
 
     return useCount;
 }
@@ -1697,12 +1720,22 @@ int LinearScan::BuildPutArgStk(GenTreePutArgStk* putArgStk)
 #endif // TARGET_X86
 
 #if defined(FEATURE_SIMD)
-            // Note that we need to check the field type, not the type of the node. This is because the
-            // field type will be TYP_SIMD12 whereas the node type might be TYP_SIMD16 for lclVar, where
-            // we "round up" to 16.
-            if ((fieldType == TYP_SIMD12) && (simdTemp == nullptr))
+            if (fieldType == TYP_SIMD12)
             {
-                simdTemp = buildInternalFloatRegisterDefForNode(putArgStk);
+                // Note that we need to check the field type, not the type of the node. This is because the
+                // field type will be TYP_SIMD12 whereas the node type might be TYP_SIMD16 for lclVar, where
+                // we "round up" to 16.
+                if (simdTemp == nullptr)
+                {
+                    simdTemp = buildInternalFloatRegisterDefForNode(putArgStk);
+                }
+
+                if (!compiler->compOpportunisticallyDependsOn(InstructionSet_SSE41))
+                {
+                    // To store SIMD12 without SSE4.1 (extractps) we will need
+                    // a temp xmm reg to do the shuffle.
+                    buildInternalFloatRegisterDefForNode(use.GetNode());
+                }
             }
 #endif // defined(FEATURE_SIMD)
 
@@ -1843,59 +1876,16 @@ int LinearScan::BuildLclHeap(GenTree* tree)
 {
     int srcCount = 1;
 
-    // Need a variable number of temp regs (see genLclHeap() in codegenamd64.cpp):
-    // Here '-' means don't care.
-    //
-    //     Size?                    Init Memory?         # temp regs
-    //      0                            -                  0 (returns 0)
-    //      const and <=6 reg words      -                  0 (pushes '0')
-    //      const and >6 reg words       Yes                0 (pushes '0')
-    //      const and <PageSize          No                 0 (amd64) 1 (x86)
-    //
-    //      const and >=PageSize         No                 1 (regCnt)
-    //      Non-const                    Yes                0 (regCnt=targetReg and pushes '0')
-    //      Non-const                    No                 1 (regCnt)
-    //
-    // Note: Here we don't need internal register to be different from targetReg.
-    // Rather, require it to be different from operand's reg.
-
     GenTree* size = tree->gtGetOp1();
-    if (size->IsCnsIntOrI())
+    if (size->IsCnsIntOrI() && size->isContained())
     {
-        assert(size->isContained());
         srcCount       = 0;
-        size_t sizeVal = size->AsIntCon()->gtIconVal;
+        size_t sizeVal = AlignUp((size_t)size->AsIntCon()->gtIconVal, STACK_ALIGN);
 
-        if (sizeVal == 0)
+        // Explicitly zeroed LCLHEAP also needs a regCnt in case of x86 or large page
+        if ((TARGET_POINTER_SIZE == 4) || (sizeVal >= compiler->eeGetPageSize()))
         {
-            // For regCnt
             buildInternalIntRegisterDefForNode(tree);
-        }
-        else
-        {
-            // Compute the amount of memory to properly STACK_ALIGN.
-            // Note: The Gentree node is not updated here as it is cheap to recompute stack aligned size.
-            // This should also help in debugging as we can examine the original size specified with localloc.
-            sizeVal = AlignUp(sizeVal, STACK_ALIGN);
-
-            // For small allocations up to 6 pointer sized words (i.e. 48 bytes of localloc)
-            // we will generate 'push 0'.
-            assert((sizeVal % REGSIZE_BYTES) == 0);
-
-            if (!compiler->info.compInitMem)
-            {
-#ifdef TARGET_X86
-                // x86 always needs regCnt.
-                // For regCnt
-                buildInternalIntRegisterDefForNode(tree);
-#else  // !TARGET_X86
-                if (sizeVal >= compiler->eeGetPageSize())
-                {
-                    // For regCnt
-                    buildInternalIntRegisterDefForNode(tree);
-                }
-#endif // !TARGET_X86
-            }
         }
     }
     else
@@ -1905,7 +1895,7 @@ int LinearScan::BuildLclHeap(GenTree* tree)
             // For regCnt
             buildInternalIntRegisterDefForNode(tree);
         }
-        BuildUse(size);
+        BuildUse(size); // could be a non-contained constant
     }
     buildInternalRegisterUses();
     BuildDef(tree);
@@ -1984,7 +1974,7 @@ int LinearScan::BuildModDiv(GenTree* tree)
     buildInternalRegisterUses();
 
     regMaskTP killMask = getKillSetForModDiv(tree->AsOp());
-    BuildDefsWithKills(tree, 1, dstCandidates, killMask);
+    BuildDefWithKills(tree, 1, dstCandidates, killMask);
     return srcCount;
 }
 
@@ -2154,10 +2144,50 @@ int LinearScan::BuildHWIntrinsic(GenTreeHWIntrinsic* intrinsicTree, int* pDstCou
         // to simplify the overall IR handling. As such, we need to "skip" such nodes when present and
         // get the underlying op1 so that delayFreeUse and other preferencing remains correct.
 
-        GenTree* op1    = SkipContainedCreateScalarUnsafe(intrinsicTree->Op(1));
-        GenTree* op2    = (numArgs >= 2) ? SkipContainedCreateScalarUnsafe(intrinsicTree->Op(2)) : nullptr;
-        GenTree* op3    = (numArgs >= 3) ? SkipContainedCreateScalarUnsafe(intrinsicTree->Op(3)) : nullptr;
+        GenTree* op1    = nullptr;
+        GenTree* op2    = nullptr;
+        GenTree* op3    = nullptr;
+        GenTree* op4    = nullptr;
+        GenTree* op5    = nullptr;
         GenTree* lastOp = SkipContainedCreateScalarUnsafe(intrinsicTree->Op(numArgs));
+
+        switch (numArgs)
+        {
+            case 5:
+            {
+                op5 = SkipContainedCreateScalarUnsafe(intrinsicTree->Op(5));
+                FALLTHROUGH;
+            }
+
+            case 4:
+            {
+                op4 = SkipContainedCreateScalarUnsafe(intrinsicTree->Op(4));
+                FALLTHROUGH;
+            }
+
+            case 3:
+            {
+                op3 = SkipContainedCreateScalarUnsafe(intrinsicTree->Op(3));
+                FALLTHROUGH;
+            }
+
+            case 2:
+            {
+                op2 = SkipContainedCreateScalarUnsafe(intrinsicTree->Op(2));
+                FALLTHROUGH;
+            }
+
+            case 1:
+            {
+                op1 = SkipContainedCreateScalarUnsafe(intrinsicTree->Op(1));
+                break;
+            }
+
+            default:
+            {
+                unreached();
+            }
+        }
 
         bool buildUses = true;
 
@@ -2175,12 +2205,18 @@ int LinearScan::BuildHWIntrinsic(GenTreeHWIntrinsic* intrinsicTree, int* pDstCou
             }
         }
 
+        if (intrinsicTree->OperIsEmbRoundingEnabled() && !lastOp->IsCnsIntOrI())
+        {
+            buildInternalIntRegisterDefForNode(intrinsicTree);
+            buildInternalIntRegisterDefForNode(intrinsicTree);
+        }
+
         // Determine whether this is an RMW operation where op2+ must be marked delayFree so that it
         // is not allocated the same register as the target.
         bool isRMW = intrinsicTree->isRMWHWIntrinsic(compiler);
 #if defined(TARGET_AMD64)
         bool isEvexCompatible = intrinsicTree->isEvexCompatibleHWIntrinsic();
-#endif
+#endif // TARGET_AMD64
 
         // Create internal temps, and handle any other special requirements.
         // Note that the default case for building uses will handle the RMW flag, but if the uses
@@ -2193,6 +2229,7 @@ int LinearScan::BuildHWIntrinsic(GenTreeHWIntrinsic* intrinsicTree, int* pDstCou
             case NI_Vector256_CreateScalarUnsafe:
             case NI_Vector256_ToScalar:
             case NI_Vector512_CreateScalarUnsafe:
+            case NI_Vector512_ToScalar:
             {
                 assert(numArgs == 1);
 
@@ -2206,7 +2243,7 @@ int LinearScan::BuildHWIntrinsic(GenTreeHWIntrinsic* intrinsicTree, int* pDstCou
                     {
                         // We will either be in memory and need to be moved
                         // into a register of the appropriate size or we
-                        // are already in an XMM/YMM register and can stay
+                        // are already in an XMM/YMM/ZMM register and can stay
                         // where we are.
 
                         tgtPrefUse = BuildUse(op1);
@@ -2220,6 +2257,7 @@ int LinearScan::BuildHWIntrinsic(GenTreeHWIntrinsic* intrinsicTree, int* pDstCou
 
             case NI_Vector128_GetElement:
             case NI_Vector256_GetElement:
+            case NI_Vector512_GetElement:
             {
                 assert(numArgs == 2);
 
@@ -2227,7 +2265,8 @@ int LinearScan::BuildHWIntrinsic(GenTreeHWIntrinsic* intrinsicTree, int* pDstCou
                 {
                     // If the index is not a constant or op1 is in register,
                     // we will use the SIMD temp location to store the vector.
-                    var_types requiredSimdTempType = (intrinsicId == NI_Vector128_GetElement) ? TYP_SIMD16 : TYP_SIMD32;
+
+                    var_types requiredSimdTempType = Compiler::getSIMDTypeForSize(intrinsicTree->GetSimdSize());
                     compiler->getSIMDInitTempVarNum(requiredSimdTempType);
                 }
                 break;
@@ -2402,13 +2441,23 @@ int LinearScan::BuildHWIntrinsic(GenTreeHWIntrinsic* intrinsicTree, int* pDstCou
             case NI_FMA_MultiplySubtractNegated:
             case NI_FMA_MultiplySubtractNegatedScalar:
             case NI_FMA_MultiplySubtractScalar:
+            case NI_AVX512F_FusedMultiplyAdd:
+            case NI_AVX512F_FusedMultiplyAddScalar:
+            case NI_AVX512F_FusedMultiplyAddNegated:
+            case NI_AVX512F_FusedMultiplyAddNegatedScalar:
+            case NI_AVX512F_FusedMultiplyAddSubtract:
+            case NI_AVX512F_FusedMultiplySubtract:
+            case NI_AVX512F_FusedMultiplySubtractScalar:
+            case NI_AVX512F_FusedMultiplySubtractAdd:
+            case NI_AVX512F_FusedMultiplySubtractNegated:
+            case NI_AVX512F_FusedMultiplySubtractNegatedScalar:
             {
-                assert(numArgs == 3);
+                assert((numArgs == 3) || (intrinsicTree->OperIsEmbRoundingEnabled()));
                 assert(isRMW);
+                assert(HWIntrinsicInfo::IsFmaIntrinsic(intrinsicId));
 
                 const bool copiesUpperBits = HWIntrinsicInfo::CopiesUpperBits(intrinsicId);
 
-                unsigned resultOpNum = 0;
                 LIR::Use use;
                 GenTree* user = nullptr;
 
@@ -2416,7 +2465,7 @@ int LinearScan::BuildHWIntrinsic(GenTreeHWIntrinsic* intrinsicTree, int* pDstCou
                 {
                     user = use.User();
                 }
-                resultOpNum = intrinsicTree->GetResultOpNumForFMA(user, op1, op2, op3);
+                unsigned resultOpNum = intrinsicTree->GetResultOpNumForRmwIntrinsic(user, op1, op2, op3);
 
                 unsigned containedOpNum = 0;
 
@@ -2501,6 +2550,105 @@ int LinearScan::BuildHWIntrinsic(GenTreeHWIntrinsic* intrinsicTree, int* pDstCou
                 srcCount += BuildDelayFreeUses(emitOp2, emitOp1);
                 srcCount += emitOp3->isContained() ? BuildOperandUses(emitOp3) : BuildDelayFreeUses(emitOp3, emitOp1);
 
+                if (intrinsicTree->OperIsEmbRoundingEnabled() && !intrinsicTree->Op(4)->IsCnsIntOrI())
+                {
+                    srcCount += BuildOperandUses(intrinsicTree->Op(4));
+                }
+
+                buildUses = false;
+                break;
+            }
+
+            case NI_AVX512F_BlendVariableMask:
+            {
+                assert(numArgs == 3);
+
+                if (op2->IsEmbMaskOp())
+                {
+                    // TODO-AVX512-CQ: Ensure we can support embedded operations on RMW intrinsics
+                    assert(!op2->isRMWHWIntrinsic(compiler));
+
+                    if (isRMW)
+                    {
+                        assert(!op1->isContained());
+
+                        tgtPrefUse = BuildUse(op1);
+                        srcCount += 1;
+
+                        assert(op2->isContained());
+
+                        for (GenTree* operand : op2->AsHWIntrinsic()->Operands())
+                        {
+                            assert(varTypeIsSIMD(operand) || varTypeIsInt(operand));
+                            srcCount += BuildDelayFreeUses(operand, op1);
+                        }
+                    }
+                    else
+                    {
+                        assert(op1->isContained() && op1->IsVectorZero());
+                        srcCount += BuildOperandUses(op1);
+
+                        assert(op2->isContained());
+
+                        for (GenTree* operand : op2->AsHWIntrinsic()->Operands())
+                        {
+                            assert(varTypeIsSIMD(operand) || varTypeIsInt(operand));
+                            srcCount += BuildOperandUses(operand);
+                        }
+                    }
+
+                    assert(!op3->isContained());
+                    srcCount += BuildOperandUses(op3);
+
+                    buildUses = false;
+                }
+                break;
+            }
+
+            case NI_AVX512F_PermuteVar8x64x2:
+            case NI_AVX512F_PermuteVar16x32x2:
+            case NI_AVX512F_VL_PermuteVar2x64x2:
+            case NI_AVX512F_VL_PermuteVar4x32x2:
+            case NI_AVX512F_VL_PermuteVar4x64x2:
+            case NI_AVX512F_VL_PermuteVar8x32x2:
+            case NI_AVX512BW_PermuteVar32x16x2:
+            case NI_AVX512BW_VL_PermuteVar8x16x2:
+            case NI_AVX512BW_VL_PermuteVar16x16x2:
+            case NI_AVX512VBMI_PermuteVar64x8x2:
+            case NI_AVX512VBMI_VL_PermuteVar16x8x2:
+            case NI_AVX512VBMI_VL_PermuteVar32x8x2:
+            {
+                assert(numArgs == 3);
+                assert(isRMW);
+                assert(HWIntrinsicInfo::IsPermuteVar2x(intrinsicId));
+
+                LIR::Use use;
+                GenTree* user = nullptr;
+
+                if (LIR::AsRange(blockSequence[curBBSeqNum]).TryGetUse(intrinsicTree, &use))
+                {
+                    user = use.User();
+                }
+                unsigned resultOpNum = intrinsicTree->GetResultOpNumForRmwIntrinsic(user, op1, op2, op3);
+
+                assert(!op1->isContained());
+                assert(!op2->isContained());
+
+                GenTree* emitOp1 = op1;
+                GenTree* emitOp2 = op2;
+                GenTree* emitOp3 = op3;
+
+                if (resultOpNum == 2)
+                {
+                    std::swap(emitOp1, emitOp2);
+                }
+
+                tgtPrefUse = BuildUse(emitOp1);
+
+                srcCount += 1;
+                srcCount += BuildDelayFreeUses(emitOp2, emitOp1);
+                srcCount += op3->isContained() ? BuildOperandUses(emitOp3) : BuildDelayFreeUses(emitOp3, emitOp1);
+
                 buildUses = false;
                 break;
             }
@@ -2545,9 +2693,6 @@ int LinearScan::BuildHWIntrinsic(GenTreeHWIntrinsic* intrinsicTree, int* pDstCou
             {
                 assert(!isRMW);
 
-                GenTree* op4 = intrinsicTree->Op(4);
-                GenTree* op5 = intrinsicTree->Op(5);
-
                 // Any pair of the index, mask, or destination registers should be different
                 srcCount += BuildOperandUses(op1, BuildEvexIncompatibleMask(op1));
                 srcCount += BuildDelayFreeUses(op2, nullptr, BuildEvexIncompatibleMask(op2));
@@ -2565,34 +2710,25 @@ int LinearScan::BuildHWIntrinsic(GenTreeHWIntrinsic* intrinsicTree, int* pDstCou
                 break;
             }
 
-            case NI_AVX512F_MoveMaskSpecial:
-            {
-                srcCount += BuildOperandUses(op1);
-                buildInternalMaskRegisterDefForNode(intrinsicTree);
-                setInternalRegsDelayFree = true;
-
-                buildUses = false;
-                break;
-            }
-
             default:
             {
                 assert((intrinsicId > NI_HW_INTRINSIC_START) && (intrinsicId < NI_HW_INTRINSIC_END));
+                assert(!HWIntrinsicInfo::IsFmaIntrinsic(intrinsicId));
+                assert(!HWIntrinsicInfo::IsPermuteVar2x(intrinsicId));
                 break;
             }
         }
 
         if (buildUses)
         {
-            assert((numArgs > 0) && (numArgs < 4));
-
             regMaskTP op1RegCandidates = RBM_NONE;
+
 #if defined(TARGET_AMD64)
             if (!isEvexCompatible)
             {
                 op1RegCandidates = BuildEvexIncompatibleMask(op1);
             }
-#endif
+#endif // TARGET_AMD64
 
             if (intrinsicTree->OperIsMemoryLoadOrStore())
             {
@@ -2611,12 +2747,14 @@ int LinearScan::BuildHWIntrinsic(GenTreeHWIntrinsic* intrinsicTree, int* pDstCou
             if (op2 != nullptr)
             {
                 regMaskTP op2RegCandidates = RBM_NONE;
+
 #if defined(TARGET_AMD64)
                 if (!isEvexCompatible)
                 {
                     op2RegCandidates = BuildEvexIncompatibleMask(op2);
                 }
-#endif
+#endif // TARGET_AMD64
+
                 if (op2->OperIs(GT_HWINTRINSIC) && op2->AsHWIntrinsic()->OperIsMemoryLoad() && op2->isContained())
                 {
                     srcCount += BuildAddrUses(op2->AsHWIntrinsic()->Op(1), op2RegCandidates);
@@ -2655,14 +2793,28 @@ int LinearScan::BuildHWIntrinsic(GenTreeHWIntrinsic* intrinsicTree, int* pDstCou
                 if (op3 != nullptr)
                 {
                     regMaskTP op3RegCandidates = RBM_NONE;
+
 #if defined(TARGET_AMD64)
                     if (!isEvexCompatible)
                     {
                         op3RegCandidates = BuildEvexIncompatibleMask(op3);
                     }
-#endif
+#endif // TARGET_AMD64
+
                     srcCount += isRMW ? BuildDelayFreeUses(op3, op1, op3RegCandidates)
                                       : BuildOperandUses(op3, op3RegCandidates);
+
+                    if (op4 != nullptr)
+                    {
+                        regMaskTP op4RegCandidates = RBM_NONE;
+
+#if defined(TARGET_AMD64)
+                        assert(isEvexCompatible);
+#endif // TARGET_AMD64
+
+                        srcCount += isRMW ? BuildDelayFreeUses(op4, op1, op4RegCandidates)
+                                          : BuildOperandUses(op4, op4RegCandidates);
+                    }
                 }
             }
         }
@@ -2673,10 +2825,11 @@ int LinearScan::BuildHWIntrinsic(GenTreeHWIntrinsic* intrinsicTree, int* pDstCou
     if (dstCount == 1)
     {
 #if defined(TARGET_AMD64)
-        if (!intrinsicTree->isEvexCompatibleHWIntrinsic() &&
-            (varTypeIsFloating(intrinsicTree->gtType) || varTypeIsSIMD(intrinsicTree->gtType)))
+        bool isEvexCompatible = intrinsicTree->isEvexCompatibleHWIntrinsic();
+
+        if (!isEvexCompatible)
         {
-            dstCandidates = lowSIMDRegs();
+            dstCandidates = BuildEvexIncompatibleMask(intrinsicTree);
         }
 #endif
 
@@ -2710,6 +2863,15 @@ int LinearScan::BuildCast(GenTreeCast* cast)
     const var_types srcType  = genActualType(src->TypeGet());
     const var_types castType = cast->gtCastType;
 
+    if ((srcType == TYP_LONG) && (castType == TYP_DOUBLE) &&
+        !compiler->compOpportunisticallyDependsOn(InstructionSet_AVX512F))
+    {
+        // We need two extra temp regs for LONG->DOUBLE cast
+        // if we don't have AVX512F available.
+        buildInternalIntRegisterDefForNode(cast);
+        buildInternalIntRegisterDefForNode(cast);
+    }
+
     regMaskTP candidates = RBM_NONE;
 #ifdef TARGET_X86
     if (varTypeIsByte(castType))
@@ -2740,7 +2902,7 @@ int LinearScan::BuildCast(GenTreeCast* cast)
 // BuildIndir: Specify register requirements for address expression of an indirection operation.
 //
 // Arguments:
-//    indirTree    -   GT_IND or GT_STOREIND gentree node
+//    indirTree    -   GT_IND or GT_STOREIND GenTree node
 //
 // Return Value:
 //    The number of sources consumed by this node.
@@ -2895,7 +3057,6 @@ int LinearScan::BuildMul(GenTree* tree)
     // three-op form:   reg = r/m * imm
 
     // This special widening 32x32->64 MUL is not used on x64
-    CLANG_FORMAT_COMMENT_ANCHOR;
 #if defined(TARGET_X86)
     if (tree->OperGet() != GT_MUL_LONG)
 #endif
@@ -2940,7 +3101,7 @@ int LinearScan::BuildMul(GenTree* tree)
         containedMemOp = op2;
     }
     regMaskTP killMask = getKillSetForMul(tree->AsOp());
-    BuildDefsWithKills(tree, dstCount, dstCandidates, killMask);
+    BuildDefWithKills(tree, dstCount, dstCandidates, killMask);
     return srcCount;
 }
 
@@ -2958,20 +3119,12 @@ void LinearScan::SetContainsAVXFlags(unsigned sizeOfSIMDVector /* = 0*/)
         return;
     }
 
-    compiler->compExactlyDependsOn(InstructionSet_AVX);
     compiler->GetEmitter()->SetContainsAVX(true);
-    if (sizeOfSIMDVector == 32)
-    {
-        compiler->GetEmitter()->SetContains256bitOrMoreAVX(true);
-        return;
-    }
 
-    if (compiler->canUseEvexEncoding())
+    if (sizeOfSIMDVector >= 32)
     {
-        if (compiler->compExactlyDependsOn(InstructionSet_AVX512F) && (sizeOfSIMDVector == 64))
-        {
-            compiler->GetEmitter()->SetContains256bitOrMoreAVX(true);
-        }
+        assert((sizeOfSIMDVector == 32) || ((sizeOfSIMDVector == 64) && compiler->canUseEvexEncoding()));
+        compiler->GetEmitter()->SetContains256bitOrMoreAVX(true);
     }
 }
 
@@ -2994,7 +3147,9 @@ void LinearScan::SetContainsAVXFlags(unsigned sizeOfSIMDVector /* = 0*/)
 inline regMaskTP LinearScan::BuildEvexIncompatibleMask(GenTree* tree)
 {
 #if defined(TARGET_AMD64)
-    if (!(varTypeIsFloating(tree->gtType) || varTypeIsSIMD(tree->gtType)))
+    assert(!varTypeIsMask(tree));
+
+    if (!varTypeIsFloating(tree->gtType) && !varTypeIsSIMD(tree->gtType))
     {
         return RBM_NONE;
     }

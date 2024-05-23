@@ -34,6 +34,14 @@ HRESULT Assembler::InitMetaData()
     if (FAILED(hr))
         goto exit;
 
+    if(m_wzMetadataVersion)
+    {
+        VARIANT optionValue;
+        V_VT(&optionValue) = VT_BSTR;
+        V_BSTR(&optionValue) = m_wzMetadataVersion; // IMetaDataDispenserEx does not require proper BSTR
+        hr = m_pDisp->SetOption(MetaDataRuntimeVersion, &optionValue);
+    }
+
     hr = m_pDisp->DefineScope(CLSID_CorMetaDataRuntime, 0, IID_IMetaDataEmit3,
                         (IUnknown **)&m_pEmitter);
     if (FAILED(hr))
@@ -131,7 +139,7 @@ HRESULT Assembler::CreateTLSDirectory() {
     }
     else
     {
-        DWORD sizeofptr = (DWORD)sizeof(__int64);
+        DWORD sizeofptr = (DWORD)sizeof(int64_t);
         DWORD sizeofdir = (DWORD)sizeof(IMAGE_TLS_DIRECTORY64);
         DWORD offsetofStartAddressOfRawData  = (DWORD)offsetof(IMAGE_TLS_DIRECTORY64, StartAddressOfRawData);
         DWORD offsetofEndAddressOfRawData    = (DWORD)offsetof(IMAGE_TLS_DIRECTORY64, EndAddressOfRawData);
@@ -141,7 +149,7 @@ HRESULT Assembler::CreateTLSDirectory() {
             // Get memory for the TLS directory block,as well as a spot for callback chain
         IMAGE_TLS_DIRECTORY64* tlsDir;
         if(FAILED(hr=m_pCeeFileGen->GetSectionBlock(tlsDirSec, sizeofdir + sizeofptr, sizeofptr, (void**) &tlsDir))) return(hr);
-        __int64* callBackChain = (__int64*) &tlsDir[1];
+        int64_t* callBackChain = (int64_t*) &tlsDir[1];
         *callBackChain = 0;
 
             // Find out where the tls directory will end up
@@ -328,9 +336,9 @@ HRESULT Assembler::CreateExportDirectory()
     unsigned                i, L, ordBase = 0xFFFFFFFF, Ldllname;
     // get the DLL name from output file name
     char*                   pszDllName;
-    Ldllname = (unsigned)wcslen(m_wzOutputFileName)*3+3;
+    Ldllname = (unsigned)u16_strlen(m_wzOutputFileName)*3+3;
     NewArrayHolder<char>    szOutputFileName(new char[Ldllname]);
-    memset(szOutputFileName,0,wcslen(m_wzOutputFileName)*3+3);
+    memset(szOutputFileName,0,u16_strlen(m_wzOutputFileName)*3+3);
     WszWideCharToMultiByte(CP_ACP,0,m_wzOutputFileName,-1,szOutputFileName,Ldllname,NULL,NULL);
     pszDllName = strrchr(szOutputFileName,DIRECTORY_SEPARATOR_CHAR_A);
 #ifdef TARGET_WINDOWS
@@ -530,7 +538,7 @@ DWORD   Assembler::EmitExportStub(DWORD dwVTFSlotRVA)
     else
     {
         report->error("Unmanaged exports are not implemented for unknown platform");
-        return NULL;
+        return 0;
     }
     // Addr must be aligned, not the stub!
     if (FAILED(m_pCeeFileGen->GetSectionDataLen (m_pILSection, &PEFileOffset))) return 0;
@@ -766,8 +774,8 @@ HRESULT Assembler::ResolveLocalMemberRefs()
 
                             if(IsMdPrivateScope(pListMD->m_Attr))
                             {
-                                WCHAR* p = wcsstr(wzUniBuf,W("$PST06"));
-                                if(p) *p = 0;
+                                WCHAR* p = (WCHAR*)u16_strstr(wzUniBuf,W("$PST06"));
+                                if(p) *p = W('\0');
                             }
 
                             m_pEmitter->DefineMemberRef(tkMemberDef, wzUniBuf,
@@ -1100,9 +1108,9 @@ HRESULT Assembler::CreatePEFile(_In_ __nullterminated WCHAR *pwzOutputFilename)
     else
     {
         WCHAR* pwc;
-        if ((pwc = wcsrchr(m_wzOutputFileName, DIRECTORY_SEPARATOR_CHAR_A)) != NULL) pwc++;
+        if ((pwc = (WCHAR*)u16_strrchr(m_wzOutputFileName, DIRECTORY_SEPARATOR_CHAR_A)) != NULL) pwc++;
 #ifdef TARGET_WINDOWS
-        else if ((pwc = wcsrchr(m_wzOutputFileName, ':')) != NULL) pwc++;
+        else if ((pwc = (WCHAR*)u16_strrchr(m_wzOutputFileName, ':')) != NULL) pwc++;
 #endif
         else pwc = m_wzOutputFileName;
 
@@ -1212,7 +1220,7 @@ HRESULT Assembler::CreatePEFile(_In_ __nullterminated WCHAR *pwzOutputFilename)
     {
 #define ELEMENT_TYPE_TYPEDEF (ELEMENT_TYPE_MAX+1)
         TypeDefDescr* pTDD;
-        unsigned __int8* pb;
+        uint8_t* pb;
         unsigned namesize;
         while((pTDD = m_TypeDefDList.POP()))
         {

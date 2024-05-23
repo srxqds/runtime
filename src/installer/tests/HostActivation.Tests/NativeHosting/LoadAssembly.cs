@@ -1,20 +1,22 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using Microsoft.DotNet.Cli.Build.Framework;
-using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Runtime.InteropServices;
+
+using Microsoft.DotNet.Cli.Build.Framework;
 using Xunit;
 
 namespace Microsoft.DotNet.CoreSetup.Test.HostActivation.NativeHosting
 {
-    public partial class LoadAssembly : IClassFixture<LoadAssembly.SharedTestState>
+    public class LoadAssembly : IClassFixture<LoadAssembly.SharedTestState>
     {
         private const string AppLoadAssemblyArg = "app_load_assembly";
         private const string ComponentLoadAssemblyArg = "component_load_assembly";
+
+        private const string AppLoadAssemblyBytesArg = "app_load_assembly_bytes";
+        private const string ComponentLoadAssemblyBytesArg = "component_load_assembly_bytes";
 
         private readonly SharedTestState sharedState;
 
@@ -23,75 +25,111 @@ namespace Microsoft.DotNet.CoreSetup.Test.HostActivation.NativeHosting
             sharedState = sharedTestState;
         }
 
-        [Fact]
-        public void ApplicationContext()
+        private void ApplicationContext(bool loadAssemblyBytes, bool loadSymbolBytes)
         {
-            var appProject = sharedState.Application;
-            var componentProject = sharedState.ComponentWithNoDependenciesFixture.TestProject;
-            string[] args =
+            var app = sharedState.Application;
+            var component = sharedState.Component;
+            IEnumerable<string> args = new[]
             {
-                AppLoadAssemblyArg,
+                loadAssemblyBytes ? AppLoadAssemblyBytesArg : AppLoadAssemblyArg,
                 sharedState.HostFxrPath,
-                appProject.AppDll,
-                componentProject.AppDll,
-                sharedState.ComponentTypeName,
-                sharedState.ComponentEntryPoint1,
-            };
+                app.AppDll
+            }.Concat(sharedState.GetComponentLoadArgs(loadAssemblyBytes, loadSymbolBytes));
+
             CommandResult result = sharedState.CreateNativeHostCommand(args, sharedState.DotNetRoot)
                 .Execute();
 
             result.Should().Pass()
-                .And.InitializeContextForApp(appProject.AppDll)
+                .And.InitializeContextForApp(app.AppDll)
                 .And.ExecuteSelfContained(selfContained: false)
-                .And.ExecuteInDefaultContext(componentProject.AssemblyName)
+                .And.ExecuteInDefaultContext(component.AssemblyName)
+                .And.ExecuteWithLocation(component.AssemblyName, loadAssemblyBytes ? string.Empty : component.AppDll)
                 .And.ExecuteFunctionPointer(sharedState.ComponentEntryPoint1, 1, 1);
         }
 
         [Fact]
-        public void ComponentContext()
+        public void ApplicationContext_FilePath()
         {
-            var appProject = sharedState.Application;
-            var componentProject = sharedState.ComponentWithNoDependenciesFixture.TestProject;
-            string[] args =
+            ApplicationContext(loadAssemblyBytes: false, loadSymbolBytes: false);
+        }
+
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public void ApplicationContext_Bytes(bool loadSymbolBytes)
+        {
+            ApplicationContext(loadAssemblyBytes: true, loadSymbolBytes);
+        }
+
+        private void ComponentContext(bool loadAssemblyBytes, bool loadSymbolBytes)
+        {
+            var app = sharedState.Application;
+            var component = sharedState.Component;
+            IEnumerable<string> args = new[]
             {
-                ComponentLoadAssemblyArg,
+                loadAssemblyBytes ? ComponentLoadAssemblyBytesArg : ComponentLoadAssemblyArg,
                 sharedState.HostFxrPath,
-                componentProject.RuntimeConfigJson,
-                componentProject.AppDll,
-                sharedState.ComponentTypeName,
-                sharedState.ComponentEntryPoint1,
-            };
+                component.RuntimeConfigJson
+            }.Concat(sharedState.GetComponentLoadArgs(loadAssemblyBytes, loadSymbolBytes));
+
             CommandResult result = sharedState.CreateNativeHostCommand(args, sharedState.DotNetRoot)
                 .Execute();
 
             result.Should().Pass()
-                .And.InitializeContextForConfig(componentProject.RuntimeConfigJson)
-                .And.ExecuteInDefaultContext(componentProject.AssemblyName)
+                .And.InitializeContextForConfig(component.RuntimeConfigJson)
+                .And.ExecuteInDefaultContext(component.AssemblyName)
+                .And.ExecuteWithLocation(component.AssemblyName, loadAssemblyBytes ? string.Empty : component.AppDll)
                 .And.ExecuteFunctionPointer(sharedState.ComponentEntryPoint1, 1, 1);
         }
 
         [Fact]
-        public void SelfContainedApplicationContext()
+        public void ComponentContext_FilePath()
         {
-            var appProject = sharedState.SelfContainedApplication;
-            var componentProject = sharedState.ComponentWithNoDependenciesFixture.TestProject;
-            string[] args =
+            ComponentContext(loadAssemblyBytes: false, loadSymbolBytes: false);
+        }
+
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public void ComponentContext_Bytes(bool loadSymbolBytes)
+        {
+            ComponentContext(loadAssemblyBytes: true, loadSymbolBytes);
+        }
+
+        private void SelfContainedApplicationContext(bool loadAssemblyBytes, bool loadSymbolBytes)
+        {
+            var app = sharedState.SelfContainedApplication;
+            var component = sharedState.Component;
+            IEnumerable<string> args = new[]
             {
-                AppLoadAssemblyArg,
-                appProject.HostFxrDll,
-                appProject.AppDll,
-                componentProject.AppDll,
-                sharedState.ComponentTypeName,
-                sharedState.ComponentEntryPoint1
-            };
+                loadAssemblyBytes ? AppLoadAssemblyBytesArg : AppLoadAssemblyArg,
+                app.HostFxrDll,
+                app.AppDll
+            }.Concat(sharedState.GetComponentLoadArgs(loadAssemblyBytes, loadSymbolBytes));
+
             CommandResult result = sharedState.CreateNativeHostCommand(args, sharedState.DotNetRoot)
                 .Execute();
 
             result.Should().Pass()
-                .And.InitializeContextForApp(appProject.AppDll)
+                .And.InitializeContextForApp(app.AppDll)
                 .And.ExecuteSelfContained(selfContained: true)
-                .And.ExecuteInDefaultContext(componentProject.AssemblyName)
+                .And.ExecuteInDefaultContext(component.AssemblyName)
+                .And.ExecuteWithLocation(component.AssemblyName, loadAssemblyBytes ? string.Empty : component.AppDll)
                 .And.ExecuteFunctionPointer(sharedState.ComponentEntryPoint1, 1, 1);
+        }
+
+        [Fact]
+        public void SelfContainedApplicationContext_FilePath()
+        {
+            SelfContainedApplicationContext(loadAssemblyBytes: false, loadSymbolBytes: false);
+        }
+
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public void SelfContainedApplicationContext_Bytes(bool loadSymbolBytes)
+        {
+            SelfContainedApplicationContext(loadAssemblyBytes: true, loadSymbolBytes);
         }
 
         public class SharedTestState : SharedTestStateBase
@@ -100,43 +138,43 @@ namespace Microsoft.DotNet.CoreSetup.Test.HostActivation.NativeHosting
             public string DotNetRoot { get; }
 
             public TestApp Application { get; }
+            public TestApp Component { get; }
             public TestApp SelfContainedApplication { get; }
-
-            public TestProjectFixture ComponentWithNoDependenciesFixture { get; }
 
             public string ComponentTypeName { get; }
             public string ComponentEntryPoint1 => "ComponentEntryPoint1";
-            public string UnmanagedFunctionPointerEntryPoint1 => "UnmanagedFunctionPointerEntryPoint1";
 
             public SharedTestState()
             {
-                var dotNet = new Microsoft.DotNet.Cli.Build.DotNetCli(RepoDirectories.BuiltDotnet);
-                DotNetRoot = dotNet.BinPath;
-                HostFxrPath = dotNet.GreatestVersionHostFxrFilePath;
+                DotNetRoot = TestContext.BuiltDotNet.BinPath;
+                HostFxrPath = TestContext.BuiltDotNet.GreatestVersionHostFxrFilePath;
 
                 Application = TestApp.CreateEmpty("App");
-                Application.PopulateFrameworkDependent(Constants.MicrosoftNETCoreApp, RepoDirectories.MicrosoftNETCoreAppVersion);
+                Application.PopulateFrameworkDependent(Constants.MicrosoftNETCoreApp, TestContext.MicrosoftNETCoreAppVersion);
 
                 SelfContainedApplication = TestApp.CreateEmpty("SelfContainedApp");
                 SelfContainedApplication.PopulateSelfContained(TestApp.MockedComponent.None);
 
-                ComponentWithNoDependenciesFixture = new TestProjectFixture("ComponentWithNoDependencies", RepoDirectories)
-                    .EnsureRestored()
-                    .PublishProject();
+                Component = TestApp.CreateFromBuiltAssets("Component");
+                ComponentTypeName = $"Component.Component, {Component.AssemblyName}";
+            }
 
-                ComponentTypeName = $"Component.Component, {ComponentWithNoDependenciesFixture.TestProject.AssemblyName}";
+            internal IEnumerable<string> GetComponentLoadArgs(bool loadAssemblyBytes, bool loadSymbolBytes)
+            {
+                List<string> args = new List<string>() { Component.AppDll };
+                if (loadAssemblyBytes)
+                    args.Add(loadSymbolBytes ? $"{Path.GetFileNameWithoutExtension(Component.AppDll)}.pdb" : "nullptr");
+
+                args.Add(ComponentTypeName);
+                args.Add(ComponentEntryPoint1);
+                return args;
             }
 
             protected override void Dispose(bool disposing)
             {
-                if (Application != null)
-                    Application.Dispose();
-
-                if (SelfContainedApplication != null)
-                    SelfContainedApplication.Dispose();
-
-                if (ComponentWithNoDependenciesFixture != null)
-                    ComponentWithNoDependenciesFixture.Dispose();
+                Application?.Dispose();
+                Component?.Dispose();
+                SelfContainedApplication?.Dispose();
 
                 base.Dispose(disposing);
             }

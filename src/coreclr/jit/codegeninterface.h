@@ -46,6 +46,21 @@ struct RegState
 
 CodeGenInterface* getCodeGenerator(Compiler* comp);
 
+class NodeInternalRegisters
+{
+    typedef JitHashTable<GenTree*, JitPtrKeyFuncs<GenTree>, regMaskTP> NodeInternalRegistersTable;
+    NodeInternalRegistersTable                                         m_table;
+
+public:
+    NodeInternalRegisters(Compiler* comp);
+
+    void      Add(GenTree* tree, regMaskTP reg);
+    regNumber Extract(GenTree* tree, regMaskTP mask = static_cast<regMaskTP>(-1));
+    regNumber GetSingle(GenTree* tree, regMaskTP mask = static_cast<regMaskTP>(-1));
+    regMaskTP GetAll(GenTree* tree);
+    unsigned  Count(GenTree* tree, regMaskTP mask = static_cast<regMaskTP>(-1));
+};
+
 class CodeGenInterface
 {
     friend class emitter;
@@ -63,18 +78,32 @@ public:
     regMaskTP rbmAllFloat;
     regMaskTP rbmFltCalleeTrash;
 
-    // Call this function after the equivalent fields in Compiler have been initialized.
-    void CopyRegisterInfo();
-
-    regMaskTP get_RBM_ALLFLOAT() const
+    FORCEINLINE regMaskTP get_RBM_ALLFLOAT() const
     {
         return this->rbmAllFloat;
     }
-    regMaskTP get_RBM_FLT_CALLEE_TRASH() const
+    FORCEINLINE regMaskTP get_RBM_FLT_CALLEE_TRASH() const
     {
         return this->rbmFltCalleeTrash;
     }
 #endif // TARGET_AMD64
+
+#if defined(TARGET_XARCH)
+    regMaskTP rbmAllMask;
+    regMaskTP rbmMskCalleeTrash;
+
+    // Call this function after the equivalent fields in Compiler have been initialized.
+    void CopyRegisterInfo();
+
+    FORCEINLINE regMaskTP get_RBM_ALLMASK() const
+    {
+        return this->rbmAllMask;
+    }
+    FORCEINLINE regMaskTP get_RBM_MSK_CALLEE_TRASH() const
+    {
+        return this->rbmMskCalleeTrash;
+    }
+#endif // TARGET_XARCH
 
     // genSpillVar is called by compUpdateLifeVar.
     // TODO-Cleanup: We should handle the spill directly in CodeGen, rather than
@@ -99,6 +128,7 @@ public:
     // move it to Lower
     virtual bool genCreateAddrMode(GenTree*  addr,
                                    bool      fold,
+                                   unsigned  naturalMul,
                                    bool*     revPtr,
                                    GenTree** rv1Ptr,
                                    GenTree** rv2Ptr,
@@ -107,9 +137,10 @@ public:
 
     GCInfo gcInfo;
 
-    RegSet   regSet;
-    RegState intRegState;
-    RegState floatRegState;
+    RegSet                regSet;
+    RegState              intRegState;
+    RegState              floatRegState;
+    NodeInternalRegisters internalRegisters;
 
 protected:
     Compiler* compiler;
@@ -118,7 +149,7 @@ protected:
 private:
 #if defined(TARGET_XARCH)
     static const insFlags instInfo[INS_count];
-#elif defined(TARGET_ARM) || defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64)
+#elif defined(TARGET_ARM) || defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
     static const BYTE instInfo[INS_count];
 #else
 #error Unsupported target architecture
@@ -127,7 +158,9 @@ private:
 #define INST_FP 0x01 // is it a FP instruction?
 public:
     static bool instIsFP(instruction ins);
-
+#if defined(TARGET_XARCH)
+    static bool instIsEmbeddedBroadcastCompatible(instruction ins);
+#endif // TARGET_XARCH
     //-------------------------------------------------------------------------
     // Liveness-related fields & methods
 public:
@@ -136,11 +169,6 @@ public:
     void genUpdateVarReg(LclVarDsc* varDsc, GenTree* tree);
 
 protected:
-#ifdef DEBUG
-    VARSET_TP genTempOldLife;
-    bool      genTempLiveChg;
-#endif
-
     VARSET_TP genLastLiveSet;  // A one element map (genLastLiveSet-> genLastLiveMask)
     regMaskTP genLastLiveMask; // these two are used in genLiveMask
 
@@ -153,9 +181,13 @@ protected:
     TreeLifeUpdater<true>* treeLifeUpdater;
 
 public:
-    bool genUseOptimizedWriteBarriers(GCInfo::WriteBarrierForm wbf);
-    bool genUseOptimizedWriteBarriers(GenTreeStoreInd* store);
+    bool            genUseOptimizedWriteBarriers(GCInfo::WriteBarrierForm wbf);
+    bool            genUseOptimizedWriteBarriers(GenTreeStoreInd* store);
     CorInfoHelpFunc genWriteBarrierHelperForWriteBarrierForm(GCInfo::WriteBarrierForm wbf);
+
+#ifdef DEBUG
+    bool genWriteBarrierUsed;
+#endif
 
     // The following property indicates whether the current method sets up
     // an explicit stack frame or not.
@@ -299,9 +331,6 @@ protected:
 #endif
 
 public:
-    unsigned InferStructOpSizeAlign(GenTree* op, unsigned* alignmentWB);
-    unsigned InferOpSizeAlign(GenTree* op, unsigned* alignmentWB);
-
     // Methods to abstract target information
 
     bool validImmForInstr(instruction ins, target_ssize_t val, insFlags flags = INS_FLAGS_DONT_CARE);
@@ -364,7 +393,7 @@ public:
         m_cgInterruptible = value;
     }
 
-#if defined(TARGET_ARMARCH) || defined(TARGET_LOONGARCH64)
+#if defined(TARGET_ARMARCH) || defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
 
     bool GetHasTailCalls()
     {
@@ -374,13 +403,13 @@ public:
     {
         m_cgHasTailCalls = value;
     }
-#endif // TARGET_ARMARCH
+#endif // TARGET_ARMARCH || TARGET_LOONGARCH64 || TARGET_RISCV64
 
 private:
     bool m_cgInterruptible;
-#if defined(TARGET_ARMARCH) || defined(TARGET_LOONGARCH64)
+#if defined(TARGET_ARMARCH) || defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
     bool m_cgHasTailCalls;
-#endif // TARGET_ARMARCH || TARGET_LOONGARCH64
+#endif // TARGET_ARMARCH || TARGET_LOONGARCH64 || TARGET_RISCV64
 
     //  The following will be set to true if we've determined that we need to
     //  generate a full-blown pointer register map for the current method.
@@ -429,7 +458,8 @@ public:
     {
         siVarLocType vlType;
 
-        union {
+        union
+        {
             // VLT_REG/VLT_REG_FP -- Any pointer-sized enregistered value (TYP_INT, TYP_REF, etc)
             // eg. EAX
             // VLT_REG_BYREF -- the specified register contains the address of the variable
@@ -614,7 +644,9 @@ public:
             VariableLiveRange(CodeGenInterface::siVarLoc varLocation,
                               emitLocation               startEmitLocation,
                               emitLocation               endEmitLocation)
-                : m_StartEmitLocation(startEmitLocation), m_EndEmitLocation(endEmitLocation), m_VarLocation(varLocation)
+                : m_StartEmitLocation(startEmitLocation)
+                , m_EndEmitLocation(endEmitLocation)
+                , m_VarLocation(varLocation)
             {
             }
 
@@ -654,21 +686,22 @@ public:
         class LiveRangeDumper
         {
             // Iterator to the first edited/added position during actual block code generation. If last
-            // block had a closed "VariableLiveRange" (with a valid "m_EndEmitLocation") and not changes
+            // block had a closed "VariableLiveRange" (with a valid "m_EndEmitLocation") and no changes
             // were applied to variable liveness, it points to the end of variable's LiveRangeList.
-            LiveRangeListIterator m_StartingLiveRange;
-            bool                  m_hasLiveRangestoDump; // True if a live range for this variable has been
+            LiveRangeListIterator m_startingLiveRange;
+            bool                  m_hasLiveRangesToDump; // True if a live range for this variable has been
                                                          // reported from last call to EndBlock
 
         public:
             LiveRangeDumper(const LiveRangeList* liveRanges)
-                : m_StartingLiveRange(liveRanges->end()), m_hasLiveRangestoDump(false){};
+                : m_startingLiveRange(liveRanges->end())
+                , m_hasLiveRangesToDump(false){};
 
             // Make the dumper point to the last "VariableLiveRange" opened or nullptr if all are closed
             void resetDumper(const LiveRangeList* list);
 
-            // Make "LiveRangeDumper" instance points the last "VariableLiveRange" added so we can
-            // start dumping from there after the actual "BasicBlock"s code is generated.
+            // Make "LiveRangeDumper" instance point at the last "VariableLiveRange" added so we can
+            // start dumping from there after the "BasicBlock"s code is generated.
             void setDumperStartAt(const LiveRangeListIterator liveRangeIt);
 
             // Return an iterator to the first "VariableLiveRange" edited/added during the current
@@ -690,10 +723,11 @@ public:
         class VariableLiveDescriptor
         {
             LiveRangeList* m_VariableLiveRanges; // the variable locations of this variable
-            INDEBUG(LiveRangeDumper* m_VariableLifeBarrier);
+            INDEBUG(LiveRangeDumper* m_VariableLifeBarrier;)
+            INDEBUG(unsigned m_varNum;)
 
         public:
-            VariableLiveDescriptor(CompAllocator allocator);
+            VariableLiveDescriptor(CompAllocator allocator DEBUG_ARG(unsigned varNum));
 
             bool           hasVariableLiveRangeOpen() const;
             LiveRangeList* getLiveRanges() const;
@@ -742,7 +776,7 @@ public:
 
         LiveRangeList* getLiveRangesForVarForBody(unsigned int varNum) const;
         LiveRangeList* getLiveRangesForVarForProlog(unsigned int varNum) const;
-        size_t getLiveRangesCount() const;
+        size_t         getLiveRangesCount() const;
 
         // For parameters locations on prolog
         void psiStartVariableLiveRange(CodeGenInterface::siVarLoc varLocation, unsigned int varNum);
@@ -767,6 +801,10 @@ public:
 
     virtual const char* siStackVarName(size_t offs, size_t size, unsigned reg, unsigned stkOffs) = 0;
 #endif // LATE_DISASM
+
+#if defined(TARGET_XARCH)
+    bool IsEmbeddedBroadcastEnabled(instruction ins, GenTree* op);
+#endif
 };
 
 #endif // _CODEGEN_INTERFACE_H_

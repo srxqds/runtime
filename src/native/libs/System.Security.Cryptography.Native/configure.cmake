@@ -17,6 +17,16 @@ check_function_exists(
     HAVE_OPENSSL_CHACHA20POLY1305
 )
 
+check_function_exists(
+    EVP_sha3_256
+    HAVE_OPENSSL_SHA3
+)
+
+check_function_exists(
+    EVP_DigestSqueeze
+    HAVE_OPENSSL_SHA3_SQUEEZE
+)
+
 configure_file(
     ${CMAKE_CURRENT_SOURCE_DIR}/pal_crypto_config.h.in
     ${CMAKE_CURRENT_BINARY_DIR}/pal_crypto_config.h)

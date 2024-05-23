@@ -61,6 +61,10 @@ namespace System.Media
             _stream = stream;
         }
 
+#if NET8_0_OR_GREATER
+        [Obsolete(Obsoletions.LegacyFormatterImplMessage, DiagnosticId = Obsoletions.LegacyFormatterImplDiagId, UrlFormat = Obsoletions.SharedUrlFormat)]
+        [EditorBrowsable(EditorBrowsableState.Never)]
+#endif
         protected SoundPlayer(SerializationInfo serializationInfo, StreamingContext context)
         {
             throw new PlatformNotSupportedException();
@@ -310,7 +314,7 @@ namespace System.Media
                 int streamLen = (int)_stream.Length;
                 _currentPos = 0;
                 _streamData = new byte[streamLen];
-#if NET7_0_OR_GREATER
+#if NET
                 _stream.ReadExactly(_streamData);
 #else
                 int totalRead = 0;
@@ -578,9 +582,9 @@ namespace System.Media
                         if (waveFormat == null)
                         {
                             int dw = ck.cksize;
-                            if (dw < Marshal.SizeOf(typeof(Interop.WinMM.WAVEFORMATEX)))
+                            if (dw < Marshal.SizeOf<Interop.WinMM.WAVEFORMATEX>())
                             {
-                                dw = Marshal.SizeOf(typeof(Interop.WinMM.WAVEFORMATEX));
+                                dw = Marshal.SizeOf<Interop.WinMM.WAVEFORMATEX>();
                             }
 
                             waveFormat = new Interop.WinMM.WAVEFORMATEX();

@@ -2,11 +2,11 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System;
-using System.Runtime.InteropServices;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Threading;
 using Microsoft.Win32.SafeHandles;
-using System.Diagnostics;
 
 namespace System.Net.Sockets
 {
@@ -96,18 +96,10 @@ namespace System.Net.Sockets
             ExposedHandleOrUntrackedConfiguration = true;
         }
 
-        internal SocketAsyncContext AsyncContext
-        {
-            get
-            {
-                if (Volatile.Read(ref _asyncContext) == null)
-                {
-                    Interlocked.CompareExchange(ref _asyncContext, new SocketAsyncContext(this), null);
-                }
-
-                return _asyncContext!;
-            }
-        }
+        internal SocketAsyncContext AsyncContext =>
+            _asyncContext ??
+            Interlocked.CompareExchange(ref _asyncContext, new SocketAsyncContext(this), null) ??
+            _asyncContext!;
 
         /// <summary>
         /// This represents whether the Socket instance is blocking or non-blocking *from the user's point of view*,

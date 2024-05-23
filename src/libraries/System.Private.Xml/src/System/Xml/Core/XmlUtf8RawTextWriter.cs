@@ -5,12 +5,12 @@
 // Instead, modify XmlRawTextWriterGenerator.ttinclude
 
 using System;
-using System.IO;
-using System.Xml;
-using System.Text;
 using System.Diagnostics;
-using System.Globalization;
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
+using System.IO;
+using System.Text;
+using System.Xml;
 
 namespace System.Xml
 {
@@ -239,7 +239,7 @@ namespace System.Xml
             Debug.Assert(prefix != null);
 
             _bufBytes[_bufPos++] = (byte)'<';
-            if (prefix != null && prefix.Length != 0)
+            if (!string.IsNullOrEmpty(prefix))
             {
                 RawText(prefix);
                 _bufBytes[_bufPos++] = (byte)':';
@@ -274,7 +274,7 @@ namespace System.Xml
                 _bufBytes[_bufPos++] = (byte)'<';
                 _bufBytes[_bufPos++] = (byte)'/';
 
-                if (prefix != null && prefix.Length != 0)
+                if (!string.IsNullOrEmpty(prefix))
                 {
                     RawText(prefix);
                     _bufBytes[_bufPos++] = (byte)':';
@@ -301,7 +301,7 @@ namespace System.Xml
             _bufBytes[_bufPos++] = (byte)'<';
             _bufBytes[_bufPos++] = (byte)'/';
 
-            if (prefix != null && prefix.Length != 0)
+            if (!string.IsNullOrEmpty(prefix))
             {
                 RawText(prefix);
                 _bufBytes[_bufPos++] = (byte)':';
@@ -1817,7 +1817,7 @@ namespace System.Xml
 
         public override void WriteStartElement(string? prefix, string localName, string? ns)
         {
-            Debug.Assert(localName != null && localName.Length != 0 && prefix != null && ns != null);
+            Debug.Assert(!string.IsNullOrEmpty(localName) && prefix != null && ns != null);
 
             // Add indentation
             if (!_mixedContent && base._textPos != base._bufPos)

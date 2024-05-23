@@ -254,7 +254,7 @@ namespace System.Net.WebSockets.Client.Tests
         {
             using (ClientWebSocket cws = await GetConnectedWebSocket(server, TimeOutMilliseconds, _output))
             {
-                var cts = new CancellationTokenSource(TimeOutMilliseconds);
+                var cts = new CancellationTokenSource(PlatformDetection.LocalEchoServerIsNotAvailable ? TimeOutMilliseconds : 200);
 
                 Task[] tasks = new Task[2];
 
@@ -306,7 +306,7 @@ namespace System.Net.WebSockets.Client.Tests
                     }
                     else
                     {
-                        Assert.True(false, "Unexpected exception: " + ex.Message);
+                        Assert.Fail("Unexpected exception: " + ex.Message);
                     }
                 }
             }
@@ -514,7 +514,11 @@ namespace System.Net.WebSockets.Client.Tests
                 // Now do a receive to get the payload.
                 var receiveBuffer = new byte[1];
                 t = ReceiveAsync(cws, new ArraySegment<byte>(receiveBuffer), ctsDefault.Token);
-                Assert.Equal(TaskStatus.RanToCompletion, t.Status);
+                // this is not synchronously possible when the WS client is on another WebWorker
+                if(!PlatformDetection.IsWasmThreadingSupported)
+                {
+                    Assert.Equal(TaskStatus.RanToCompletion, t.Status);
+                }
 
                 r = await t;
                 Assert.Equal(WebSocketMessageType.Binary, r.MessageType);

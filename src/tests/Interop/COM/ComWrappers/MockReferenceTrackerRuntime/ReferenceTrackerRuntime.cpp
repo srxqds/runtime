@@ -10,6 +10,7 @@
 #include <atomic>
 #include <cassert>
 #include <exception>
+#include <stdexcept>
 #include <list>
 #include <mutex>
 #include <unordered_map>
@@ -37,8 +38,8 @@ namespace API
         STDMETHOD(ReleaseDisconnectedReferenceSources)() = 0;
         STDMETHOD(NotifyEndOfReferenceTrackingOnThread)() = 0;
         STDMETHOD(GetTrackerTarget)(_In_ IUnknown* obj, _Outptr_ IReferenceTrackerTarget** ppNewReference) = 0;
-        STDMETHOD(AddMemoryPressure)(_In_ UINT64 bytesAllocated) = 0;
-        STDMETHOD(RemoveMemoryPressure)(_In_ UINT64 bytesAllocated) = 0;
+        STDMETHOD(AddMemoryPressure)(_In_ uint64_t bytesAllocated) = 0;
+        STDMETHOD(RemoveMemoryPressure)(_In_ uint64_t bytesAllocated) = 0;
     };
 
     //3cf184b4-7ccb-4dda-8455-7e6ce99a3298

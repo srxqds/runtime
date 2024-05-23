@@ -24,11 +24,14 @@ HELPER(READYTORUN_HELPER_ThrowDivZero,              CORINFO_HELP_THROWDIVZERO,  
 HELPER(READYTORUN_HELPER_WriteBarrier,              CORINFO_HELP_ASSIGN_REF,                        )
 HELPER(READYTORUN_HELPER_CheckedWriteBarrier,       CORINFO_HELP_CHECKED_ASSIGN_REF,                )
 HELPER(READYTORUN_HELPER_ByRefWriteBarrier,         CORINFO_HELP_ASSIGN_BYREF,                      )
+HELPER(READYTORUN_HELPER_BulkWriteBarrier,          CORINFO_HELP_BULK_WRITEBARRIER,                 )
 
 HELPER(READYTORUN_HELPER_Stelem_Ref,                CORINFO_HELP_ARRADDR_ST,                        )
 HELPER(READYTORUN_HELPER_Ldelema_Ref,               CORINFO_HELP_LDELEMA_REF,                       )
 
 HELPER(READYTORUN_HELPER_MemSet,                    CORINFO_HELP_MEMSET,                            )
+HELPER(READYTORUN_HELPER_MemZero,                   CORINFO_HELP_MEMZERO,                           )
+HELPER(READYTORUN_HELPER_NativeMemSet,              CORINFO_HELP_NATIVE_MEMSET,                     )
 HELPER(READYTORUN_HELPER_MemCpy,                    CORINFO_HELP_MEMCPY,                            )
 
 HELPER(READYTORUN_HELPER_LogMethodEnter,            CORINFO_HELP_BBT_FCN_ENTER,                     )
@@ -55,6 +58,8 @@ HELPER(READYTORUN_HELPER_GenericNonGcTlsBase,       CORINFO_HELP_GETGENERICS_NON
 
 HELPER(READYTORUN_HELPER_VirtualFuncPtr,            CORINFO_HELP_VIRTUAL_FUNC_PTR,                  )
 HELPER(READYTORUN_HELPER_IsInstanceOfException,     CORINFO_HELP_ISINSTANCEOF_EXCEPTION,            )
+HELPER(READYTORUN_HELPER_NewMaybeFrozenArray,       CORINFO_HELP_NEWARR_1_MAYBEFROZEN,              )
+HELPER(READYTORUN_HELPER_NewMaybeFrozenObject,      CORINFO_HELP_NEWFAST_MAYBEFROZEN,               )
 
 HELPER(READYTORUN_HELPER_LMul,                      CORINFO_HELP_LMUL,                              )
 HELPER(READYTORUN_HELPER_LMulOfv,                   CORINFO_HELP_LMUL_OVF,                          )

@@ -10,7 +10,6 @@ using Mono.Linker.Tests.Cases.Expectations.Helpers;
 
 namespace Mono.Linker.Tests.Cases.RequiresCapability
 {
-	[IgnoreTestCase ("Ignore in NativeAOT, see https://github.com/dotnet/runtime/issues/82447", IgnoredBy = Tool.NativeAot)]
 	[SkipKeptItemsValidation]
 	[ExpectedNoWarnings]
 	public class ReflectionAccessFromCompilerGeneratedCode
@@ -25,10 +24,9 @@ namespace Mono.Linker.Tests.Cases.RequiresCapability
 		class ReflectionAccessFromStateMachine
 		{
 			[ExpectedWarning ("IL2026", "--TypeWithMethodWithRequires.MethodWithRequires--", CompilerGeneratedCode = true)]
-			[ExpectedWarning ("IL2026", "--MethodWithLocalFunctionWithRUC.LocalFunction--", CompilerGeneratedCode = true,
-				ProducedBy = Tool.Trimmer)]
-			[ExpectedWarning ("IL2118", nameof (TypeWithMethodWithRequires.MethodWithLocalFunctionCallsRUC), "LocalFunction", CompilerGeneratedCode = true,
-				ProducedBy = Tool.Trimmer)]
+			[ExpectedWarning ("IL3002", "--TypeWithMethodWithRequires.MethodWithRequires--", Tool.NativeAot, "https://github.com/dotnet/runtime/issues/101998", CompilerGeneratedCode = true)]
+			[ExpectedWarning ("IL3050", "--TypeWithMethodWithRequires.MethodWithRequires--", Tool.NativeAot, "https://github.com/dotnet/runtime/issues/101998", CompilerGeneratedCode = true)]
+			[UnexpectedWarning ("IL2118", nameof (TypeWithMethodWithRequires.MethodWithLocalFunctionCallsRUC), "LocalFunction", Tool.Trimmer, "https://github.com/dotnet/runtime/issues/85042", CompilerGeneratedCode = true)]
 			[ExpectedWarning ("IL2111", nameof (TypeWithMethodWithRequires.MethodWithAnnotations), CompilerGeneratedCode = true)]
 			static IEnumerable<int> TestIterator ()
 			{
@@ -37,6 +35,8 @@ namespace Mono.Linker.Tests.Cases.RequiresCapability
 			}
 
 			[RequiresUnreferencedCode ("--TestIteratorWithRUC--")]
+			[RequiresAssemblyFiles ("--TestIteratorWithRUC--")]
+			[RequiresDynamicCode ("--TestIteratorWithRUC--")]
 			static IEnumerable<int> TestIteratorWithRUC ()
 			{
 				typeof (TypeWithMethodWithRequires).RequiresAll ();
@@ -44,10 +44,9 @@ namespace Mono.Linker.Tests.Cases.RequiresCapability
 			}
 
 			[ExpectedWarning ("IL2026", "--TypeWithMethodWithRequires.MethodWithRequires--", CompilerGeneratedCode = true)]
-			[ExpectedWarning ("IL2026", "--MethodWithLocalFunctionWithRUC.LocalFunction--", CompilerGeneratedCode = true,
-				ProducedBy = Tool.Trimmer)]
-			[ExpectedWarning ("IL2118", nameof (TypeWithMethodWithRequires.MethodWithLocalFunctionCallsRUC), "LocalFunction", CompilerGeneratedCode = true,
-				ProducedBy = Tool.Trimmer)]
+			[ExpectedWarning ("IL3002", "--TypeWithMethodWithRequires.MethodWithRequires--", Tool.NativeAot, "https://github.com/dotnet/runtime/issues/101998", CompilerGeneratedCode = true)]
+			[ExpectedWarning ("IL3050", "--TypeWithMethodWithRequires.MethodWithRequires--", Tool.NativeAot, "https://github.com/dotnet/runtime/issues/101998", CompilerGeneratedCode = true)]
+			[UnexpectedWarning ("IL2118", nameof (TypeWithMethodWithRequires.MethodWithLocalFunctionCallsRUC), "LocalFunction", Tool.Trimmer, "https://github.com/dotnet/runtime/issues/85042", CompilerGeneratedCode = true)]
 			[ExpectedWarning ("IL2111", nameof (TypeWithMethodWithRequires.MethodWithAnnotations), CompilerGeneratedCode = true)]
 			static async void TestAsync ()
 			{
@@ -56,6 +55,8 @@ namespace Mono.Linker.Tests.Cases.RequiresCapability
 			}
 
 			[RequiresUnreferencedCode ("--TestAsyncWithRUC--")]
+			[RequiresAssemblyFiles ("--TestAsyncWithRUC--")]
+			[RequiresDynamicCode ("--TestAsyncWithRUC--")]
 			static async void TestAsyncWithRUC ()
 			{
 				typeof (TypeWithMethodWithRequires).RequiresAll ();
@@ -63,10 +64,14 @@ namespace Mono.Linker.Tests.Cases.RequiresCapability
 			}
 
 			[ExpectedWarning ("IL2026", "--TestIteratorWithRUC--")]
+			[ExpectedWarning ("IL3002", "--TestIteratorWithRUC--", Tool.NativeAot | Tool.Analyzer, "NativeAOT Specific Warnings")]
+			[ExpectedWarning ("IL3050", "--TestIteratorWithRUC--", Tool.NativeAot | Tool.Analyzer, "NativeAOT Specific Warnings")]
 			[ExpectedWarning ("IL2026", "--TestAsyncWithRUC--")]
+			[ExpectedWarning ("IL3002", "--TestAsyncWithRUC--", Tool.NativeAot | Tool.Analyzer, "NativeAOT Specific Warnings")]
+			[ExpectedWarning ("IL3050", "--TestAsyncWithRUC--", Tool.NativeAot | Tool.Analyzer, "NativeAOT Specific Warnings")]
 			public static void Test ()
 			{
-				TestIterator ();
+				TestIterator ().GetEnumerator ().MoveNext (); // Must actually use the enumerator, otherwise NativeAOT will trim the implementation
 				TestIteratorWithRUC ();
 				TestAsync ();
 				TestAsyncWithRUC ();
@@ -78,10 +83,9 @@ namespace Mono.Linker.Tests.Cases.RequiresCapability
 			static void TestLocalFunction ()
 			{
 				[ExpectedWarning ("IL2026", "--TypeWithMethodWithRequires.MethodWithRequires--")]
-				[ExpectedWarning ("IL2026", "--MethodWithLocalFunctionWithRUC.LocalFunction--",
-					ProducedBy = Tool.Trimmer)]
-				[ExpectedWarning ("IL2118", nameof (TypeWithMethodWithRequires.MethodWithLocalFunctionCallsRUC), "LocalFunction",
-					ProducedBy = Tool.Trimmer)]
+				[ExpectedWarning ("IL3002", "--TypeWithMethodWithRequires.MethodWithRequires--", Tool.NativeAot, "https://github.com/dotnet/runtime/issues/101998")]
+				[ExpectedWarning ("IL3050", "--TypeWithMethodWithRequires.MethodWithRequires--", Tool.NativeAot, "https://github.com/dotnet/runtime/issues/101998")]
+				[UnexpectedWarning ("IL2118", nameof (TypeWithMethodWithRequires.MethodWithLocalFunctionCallsRUC), "LocalFunction", Tool.Trimmer, "https://github.com/dotnet/runtime/issues/85042")]
 				[ExpectedWarning ("IL2111", nameof (TypeWithMethodWithRequires.MethodWithAnnotations))]
 				void LocalFunction ()
 				{
@@ -91,9 +95,13 @@ namespace Mono.Linker.Tests.Cases.RequiresCapability
 			}
 
 			[ExpectedWarning ("IL2026", "--LocalFunction--")]
+			[ExpectedWarning ("IL3002", "--LocalFunction--", Tool.NativeAot | Tool.Analyzer, "NativeAOT Specific Warnings")]
+			[ExpectedWarning ("IL3050", "--LocalFunction--", Tool.NativeAot | Tool.Analyzer, "NativeAOT Specific Warnings")]
 			static void TestLocalFunctionWithRUC ()
 			{
 				[RequiresUnreferencedCode ("--LocalFunction--")]
+				[RequiresAssemblyFiles ("--LocalFunction--")]
+				[RequiresDynamicCode ("--LocalFunction--")]
 				void LocalFunction ()
 				{
 					typeof (TypeWithMethodWithRequires).RequiresAll ();
@@ -102,6 +110,8 @@ namespace Mono.Linker.Tests.Cases.RequiresCapability
 			}
 
 			[RequiresUnreferencedCode ("--TestLocalFunctionInMethodWithRUC--")]
+			[RequiresAssemblyFiles ("--TestLocalFunctionInMethodWithRUC--")]
+			[RequiresDynamicCode ("--TestLocalFunctionInMethodWithRUC--")]
 			static void TestLocalFunctionInMethodWithRUC ()
 			{
 				void LocalFunction ()
@@ -112,6 +122,8 @@ namespace Mono.Linker.Tests.Cases.RequiresCapability
 			}
 
 			[ExpectedWarning ("IL2026", "--TestLocalFunctionInMethodWithRUC--")]
+			[ExpectedWarning ("IL3002", "--TestLocalFunctionInMethodWithRUC--", Tool.NativeAot | Tool.Analyzer, "NativeAOT Specific Warnings")]
+			[ExpectedWarning ("IL3050", "--TestLocalFunctionInMethodWithRUC--", Tool.NativeAot | Tool.Analyzer, "NativeAOT Specific Warnings")]
 			public static void Test ()
 			{
 				TestLocalFunction ();
@@ -126,10 +138,9 @@ namespace Mono.Linker.Tests.Cases.RequiresCapability
 			{
 				var lambda =
 				[ExpectedWarning ("IL2026", "--TypeWithMethodWithRequires.MethodWithRequires--")]
-				[ExpectedWarning ("IL2026", "--MethodWithLocalFunctionWithRUC.LocalFunction--",
-					ProducedBy = Tool.Trimmer)]
-				[ExpectedWarning ("IL2118", nameof (TypeWithMethodWithRequires.MethodWithLocalFunctionCallsRUC), "LocalFunction",
-					ProducedBy = Tool.Trimmer)]
+				[ExpectedWarning ("IL3002", "--TypeWithMethodWithRequires.MethodWithRequires--", Tool.NativeAot, "https://github.com/dotnet/runtime/issues/101998")]
+				[ExpectedWarning ("IL3050", "--TypeWithMethodWithRequires.MethodWithRequires--", Tool.NativeAot, "https://github.com/dotnet/runtime/issues/101998")]
+				[UnexpectedWarning ("IL2118", nameof (TypeWithMethodWithRequires.MethodWithLocalFunctionCallsRUC), "LocalFunction", Tool.Trimmer, "https://github.com/dotnet/runtime/issues/85042")]
 				[ExpectedWarning ("IL2111", nameof (TypeWithMethodWithRequires.MethodWithAnnotations))]
 				() => {
 					typeof (TypeWithMethodWithRequires).RequiresAll ();
@@ -138,17 +149,39 @@ namespace Mono.Linker.Tests.Cases.RequiresCapability
 			}
 
 			[ExpectedWarning ("IL2026", "--TestLambdaInMethodWithRUC--")]
+			[ExpectedWarning ("IL3002", "--TestLambdaInMethodWithRUC--", Tool.NativeAot | Tool.Analyzer, "NativeAOT Specific Warnings")]
+			[ExpectedWarning ("IL3050", "--TestLambdaInMethodWithRUC--", Tool.NativeAot | Tool.Analyzer, "NativeAOT Specific Warnings")]
 			static void TestLambdaWithRUC ()
 			{
 				var lambda =
 				[RequiresUnreferencedCode ("--TestLambdaInMethodWithRUC--")]
+				[RequiresAssemblyFiles ("--TestLambdaInMethodWithRUC--")]
+				[RequiresDynamicCode ("--TestLambdaInMethodWithRUC--")]
 				() => {
 					typeof (TypeWithMethodWithRequires).RequiresAll ();
 				};
 				lambda ();
 			}
 
+			[ExpectedWarning ("IL2026", "--TestLambdaWithRUCLdftn--")]
+			[ExpectedWarning ("IL3002", "--TestLambdaWithRUCLdftn--", Tool.NativeAot | Tool.Analyzer, "NativeAOT Specific Warnings")]
+			[ExpectedWarning ("IL3050", "--TestLambdaWithRUCLdftn--", Tool.NativeAot | Tool.Analyzer, "NativeAOT Specific Warnings")]
+			static void TestLambdaWithRUCLdftn ()
+			{
+				var lambda =
+				[RequiresUnreferencedCode ("--TestLambdaWithRUCLdftn--")]
+				[RequiresAssemblyFiles ("--TestLambdaWithRUCLdftn--")]
+				[RequiresDynamicCode ("--TestLambdaWithRUCLdftn--")]
+				() => {
+					var _ = new Action (TypeWithMethodWithRequires.MethodWithRequires);
+					var _2 = new Action<Type> (TypeWithMethodWithRequires.MethodWithAnnotations);
+				};
+				lambda ();
+			}
+
 			[RequiresUnreferencedCode ("--TestLambdaInMethodWithRUC--")]
+			[RequiresAssemblyFiles ("--TestLambdaInMethodWithRUC--")]
+			[RequiresDynamicCode ("--TestLambdaInMethodWithRUC--")]
 			static void TestLambdaInMethodWithRUC ()
 			{
 				var lambda =
@@ -159,10 +192,13 @@ namespace Mono.Linker.Tests.Cases.RequiresCapability
 			}
 
 			[ExpectedWarning ("IL2026", "--TestLambdaInMethodWithRUC--")]
+			[ExpectedWarning ("IL3002", "--TestLambdaInMethodWithRUC--", Tool.NativeAot | Tool.Analyzer, "NativeAOT Specific Warnings")]
+			[ExpectedWarning ("IL3050", "--TestLambdaInMethodWithRUC--", Tool.NativeAot | Tool.Analyzer, "NativeAOT Specific Warnings")]
 			public static void Test ()
 			{
 				TestLambda ();
 				TestLambdaWithRUC ();
+				TestLambdaWithRUCLdftn ();
 				TestLambdaInMethodWithRUC ();
 			}
 		}
@@ -184,9 +220,13 @@ namespace Mono.Linker.Tests.Cases.RequiresCapability
 			public static void MethodWithAnnotations ([DynamicallyAccessedMembers (DynamicallyAccessedMemberTypes.All)] Type t) { }
 
 			[ExpectedWarning ("IL2026", "--MethodWithLocalFunctionWithRUC.LocalFunction--")]
+			[ExpectedWarning ("IL3002", "--MethodWithLocalFunctionWithRUC.LocalFunction--", Tool.NativeAot | Tool.Analyzer, "NativeAOT Specific Warnings")]
+			[ExpectedWarning ("IL3050", "--MethodWithLocalFunctionWithRUC.LocalFunction--", Tool.NativeAot | Tool.Analyzer, "NativeAOT Specific Warnings")]
 			public static void MethodWithLocalFunctionWithRUC ()
 			{
 				[RequiresUnreferencedCode ("--MethodWithLocalFunctionWithRUC.LocalFunction--")]
+				[RequiresAssemblyFiles ("--MethodWithLocalFunctionWithRUC.LocalFunction--")]
+				[RequiresDynamicCode ("--MethodWithLocalFunctionWithRUC.LocalFunction--")]
 				void LocalFunction ()
 				{ }
 				LocalFunction ();
@@ -195,12 +235,16 @@ namespace Mono.Linker.Tests.Cases.RequiresCapability
 			public static void MethodWithLocalFunctionCallsRUC ()
 			{
 				[ExpectedWarning ("IL2026", "--MethodWithRUC--")]
+				[ExpectedWarning ("IL3002", "--MethodWithRUC--", Tool.NativeAot | Tool.Analyzer, "NativeAOT Specific Warnings")]
+				[ExpectedWarning ("IL3050", "--MethodWithRUC--", Tool.NativeAot | Tool.Analyzer, "NativeAOT Specific Warnings")]
 				void LocalFunction () => MethodWithRUC ();
 				LocalFunction ();
 			}
 		}
 
 		[RequiresUnreferencedCode ("--MethodWithRUC--")]
+		[RequiresAssemblyFiles ("--MethodWithRUC--")]
+		[RequiresDynamicCode ("--MethodWithRUC--")]
 		static void MethodWithRUC () { }
 	}
 }

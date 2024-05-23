@@ -1,17 +1,42 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using Xunit;
-using System.Threading;
-using System.Threading.Tasks;
-using System.Diagnostics.Metrics;
 using Microsoft.DotNet.RemoteExecutor;
 using System.Collections.Generic;
+using System.Diagnostics.Metrics;
+using System.Diagnostics.Tests;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using Xunit;
 
 namespace System.Diagnostics.Metrics.Tests
 {
     public class MetricsTests
     {
+        [Fact]
+        public void MeasurementConstructionTest()
+        {
+            for (int i = 0; i < 30; i++)
+            {
+                TagListTests.CreateTagList(i, out TagList tags);
+                TagListTests.ValidateTags(in tags, i);
+                KeyValuePair<string, object>[] tagsArray = tags.ToArray();
+
+                var measurement = new Measurement<int>(i, tags);
+                Assert.Equal(i, measurement.Value);
+                TagListTests.ValidateTags(new TagList(measurement.Tags), tagsArray);
+                
+                measurement = new Measurement<int>(i, tagsArray);
+                Assert.Equal(i, measurement.Value);
+                TagListTests.ValidateTags(new TagList(measurement.Tags), tagsArray);
+
+                measurement = new Measurement<int>(i, tagsArray.AsSpan());
+                Assert.Equal(i, measurement.Value);
+                TagListTests.ValidateTags(new TagList(measurement.Tags), tagsArray);
+            }
+        }
+
         [ConditionalFact(typeof(RemoteExecutor), nameof(RemoteExecutor.IsSupported))]
         public void MeterConstructionTest()
         {
@@ -24,7 +49,7 @@ namespace System.Diagnostics.Metrics.Tests
                 Assert.Equal("meter2", meter.Name);
                 Assert.Equal("v1.0", meter.Version);
 
-                Assert.Throws<ArgumentNullException>(() => new Meter(null));
+                Assert.Throws<ArgumentNullException>(() => new Meter(name: null));
             }).Dispose();
         }
 
@@ -182,7 +207,6 @@ namespace System.Diagnostics.Metrics.Tests
                     // MeasurementsCompleted should be called 4 times for every instrument.
                     Assert.Equal(0, instrumentsEncountered);
                 }
-
             }).Dispose();
         }
 
@@ -238,76 +262,115 @@ namespace System.Diagnostics.Metrics.Tests
             }).Dispose();
         }
 
-        [ConditionalFact(typeof(RemoteExecutor), nameof(RemoteExecutor.IsSupported))]
-        public void InstrumentMeasurementTest()
+        [ConditionalTheory(typeof(RemoteExecutor), nameof(RemoteExecutor.IsSupported))]
+        [InlineData(false)]
+        [InlineData(true)]
+        public void InstrumentMeasurementTest(bool useSpan)
         {
-            RemoteExecutor.Invoke(() => {
+            RemoteExecutor.Invoke((string useSpanStr) => {
                 Meter meter = new Meter("InstrumentMeasurementTest");
+                bool useSpan = bool.Parse(useSpanStr);
 
                 Counter<byte> counter = meter.CreateCounter<byte>("byteCounter");
-                InstrumentMeasurementAggregationValidation(counter, (value, tags) => { counter.Add(value, tags); } );
+                InstrumentMeasurementAggregationValidation(counter, (value, tags) => { AddToCounter(counter, value, tags, useSpan); } );
 
                 UpDownCounter<byte> upDownCounter = meter.CreateUpDownCounter<byte>("byteUpDownCounter");
-                InstrumentMeasurementAggregationValidation(upDownCounter, (value, tags) => { upDownCounter.Add(value, tags); });
+                InstrumentMeasurementAggregationValidation(upDownCounter, (value, tags) => { AddToUpDownCounter(upDownCounter, value, tags, useSpan); });
 
                 Counter<short> counter1 = meter.CreateCounter<short>("shortCounter");
-                InstrumentMeasurementAggregationValidation(counter1, (value, tags) => { counter1.Add(value, tags); } );
+                InstrumentMeasurementAggregationValidation(counter1, (value, tags) => { AddToCounter(counter1, value, tags, useSpan); } );
 
                 UpDownCounter<short> upDownCounter1 = meter.CreateUpDownCounter<short>("shortUpDownCounter");
-                InstrumentMeasurementAggregationValidation(upDownCounter1, (value, tags) => { upDownCounter1.Add(value, tags); }, true);
+                InstrumentMeasurementAggregationValidation(upDownCounter1, (value, tags) => { AddToUpDownCounter(upDownCounter1, value, tags, useSpan); }, true);
 
                 Counter<int> counter2 = meter.CreateCounter<int>("intCounter");
-                InstrumentMeasurementAggregationValidation(counter2, (value, tags) => { counter2.Add(value, tags); } );
+                InstrumentMeasurementAggregationValidation(counter2, (value, tags) => { AddToCounter(counter2, value, tags, useSpan); } );
 
                 UpDownCounter<int> upDownCounter2 = meter.CreateUpDownCounter<int>("intUpDownCounter");
-                InstrumentMeasurementAggregationValidation(upDownCounter2, (value, tags) => { upDownCounter2.Add(value, tags); }, true);
+                InstrumentMeasurementAggregationValidation(upDownCounter2, (value, tags) => { AddToUpDownCounter(upDownCounter2, value, tags, useSpan); }, true);
 
                 Counter<long> counter3 = meter.CreateCounter<long>("longCounter");
-                InstrumentMeasurementAggregationValidation(counter3, (value, tags) => { counter3.Add(value, tags); } );
+                InstrumentMeasurementAggregationValidation(counter3, (value, tags) => { AddToCounter(counter3, value, tags, useSpan); } );
 
                 UpDownCounter<long> upDownCounter3 = meter.CreateUpDownCounter<long>("longUpDownCounter");
-                InstrumentMeasurementAggregationValidation(upDownCounter3, (value, tags) => { upDownCounter3.Add(value, tags); }, true);
+                InstrumentMeasurementAggregationValidation(upDownCounter3, (value, tags) => { AddToUpDownCounter(upDownCounter3, value, tags, useSpan); }, true);
 
                 Counter<float> counter4 = meter.CreateCounter<float>("floatCounter");
-                InstrumentMeasurementAggregationValidation(counter4, (value, tags) => { counter4.Add(value, tags); } );
+                InstrumentMeasurementAggregationValidation(counter4, (value, tags) => { AddToCounter(counter4, value, tags, useSpan); } );
 
                 UpDownCounter<float> upDownCounter4 = meter.CreateUpDownCounter<float>("floatUpDownCounter");
-                InstrumentMeasurementAggregationValidation(upDownCounter4, (value, tags) => { upDownCounter4.Add(value, tags); }, true);
+                InstrumentMeasurementAggregationValidation(upDownCounter4, (value, tags) => { AddToUpDownCounter(upDownCounter4, value, tags, useSpan); }, true);
 
                 Counter<double> counter5 = meter.CreateCounter<double>("doubleCounter");
-                InstrumentMeasurementAggregationValidation(counter5, (value, tags) => { counter5.Add(value, tags); } );
+                InstrumentMeasurementAggregationValidation(counter5, (value, tags) => { AddToCounter(counter5, value, tags, useSpan); } );
 
                 UpDownCounter<double> upDownCounter5 = meter.CreateUpDownCounter<double>("doubleUpDownCounter");
-                InstrumentMeasurementAggregationValidation(upDownCounter5, (value, tags) => { upDownCounter5.Add(value, tags); }, true);
+                InstrumentMeasurementAggregationValidation(upDownCounter5, (value, tags) => { AddToUpDownCounter(upDownCounter5, value, tags, useSpan); }, true);
 
                 Counter<decimal> counter6 = meter.CreateCounter<decimal>("decimalCounter");
-                InstrumentMeasurementAggregationValidation(counter6, (value, tags) => { counter6.Add(value, tags); } );
+                InstrumentMeasurementAggregationValidation(counter6, (value, tags) => { AddToCounter(counter6, value, tags, useSpan); } );
 
                 UpDownCounter<decimal> upDownCounter6 = meter.CreateUpDownCounter<decimal>("decimalUpDownCounter");
-                InstrumentMeasurementAggregationValidation(upDownCounter6, (value, tags) => { upDownCounter6.Add(value, tags); }, true);
+                InstrumentMeasurementAggregationValidation(upDownCounter6, (value, tags) => { AddToUpDownCounter(upDownCounter6, value, tags, useSpan); }, true);
 
                 Histogram<byte> histogram = meter.CreateHistogram<byte>("byteHistogram");
-                InstrumentMeasurementAggregationValidation(histogram, (value, tags) => { histogram.Record(value, tags); } );
+                InstrumentMeasurementAggregationValidation(histogram, (value, tags) => { Record(histogram, value, tags, useSpan); } );
 
                 Histogram<short> histogram1 = meter.CreateHistogram<short>("shortHistogram");
-                InstrumentMeasurementAggregationValidation(histogram1, (value, tags) => { histogram1.Record(value, tags); } );
+                InstrumentMeasurementAggregationValidation(histogram1, (value, tags) => { Record(histogram1, value, tags, useSpan); } );
 
                 Histogram<int> histogram2 = meter.CreateHistogram<int>("intHistogram");
-                InstrumentMeasurementAggregationValidation(histogram2, (value, tags) => { histogram2.Record(value, tags); } );
+                InstrumentMeasurementAggregationValidation(histogram2, (value, tags) => { Record(histogram2, value, tags, useSpan); } );
 
                 Histogram<long> histogram3 = meter.CreateHistogram<long>("longHistogram");
-                InstrumentMeasurementAggregationValidation(histogram3, (value, tags) => { histogram3.Record(value, tags); } );
+                InstrumentMeasurementAggregationValidation(histogram3, (value, tags) => { Record(histogram3, value, tags, useSpan); } );
 
                 Histogram<float> histogram4 = meter.CreateHistogram<float>("floatHistogram");
-                InstrumentMeasurementAggregationValidation(histogram4, (value, tags) => { histogram4.Record(value, tags); } );
+                InstrumentMeasurementAggregationValidation(histogram4, (value, tags) => { Record(histogram4, value, tags, useSpan); } );
 
                 Histogram<double> histogram5 = meter.CreateHistogram<double>("doubleHistogram");
-                InstrumentMeasurementAggregationValidation(histogram5, (value, tags) => { histogram5.Record(value, tags); } );
+                InstrumentMeasurementAggregationValidation(histogram5, (value, tags) => { Record(histogram5, value, tags, useSpan); } );
 
                 Histogram<decimal> histogram6 = meter.CreateHistogram<decimal>("decimalHistogram");
-                InstrumentMeasurementAggregationValidation(histogram6, (value, tags) => { histogram6.Record(value, tags); } );
+                InstrumentMeasurementAggregationValidation(histogram6, (value, tags) => { Record(histogram6, value, tags, useSpan); } );
 
-            }).Dispose();
+            }, useSpan.ToString()).Dispose();
+            
+            void AddToCounter<T>(Counter<T> counter, T delta, KeyValuePair<string, object?>[] tags, bool useSpan) where T : struct
+            {
+                if (useSpan)
+                {
+                    counter.Add(delta, (ReadOnlySpan<KeyValuePair<string, object?>>)tags);
+                }
+                else
+                {
+                    counter.Add(delta, tags);
+                }
+            }
+
+            void AddToUpDownCounter<T>(UpDownCounter<T> upDownCounter, T delta, KeyValuePair<string, object?>[] tags, bool useSpan) where T : struct
+            {
+                if (useSpan)
+                {
+                    upDownCounter.Add(delta, (ReadOnlySpan<KeyValuePair<string, object?>>)tags);
+                }
+                else
+                {
+                    upDownCounter.Add(delta, tags);
+                }
+            }
+
+            void Record<T>(Histogram<T> histogram, T value, KeyValuePair<string, object?>[] tags, bool useSpan) where T : struct
+            {
+                if (useSpan)
+                {
+                    histogram.Record(value, (ReadOnlySpan<KeyValuePair<string, object?>>)tags);
+                }
+                else
+                {
+                    histogram.Record(value, tags);
+                }
+            }
         }
 
 
@@ -928,10 +991,10 @@ namespace System.Diagnostics.Metrics.Tests
         }
 
         [ConditionalFact(typeof(RemoteExecutor), nameof(RemoteExecutor.IsSupported))]
-        public void EnableListeneingMultipleTimesWithDifferentState()
+        public void EnableListeningMultipleTimesWithDifferentState()
         {
             RemoteExecutor.Invoke(() => {
-                Meter meter = new Meter("EnableListeneingMultipleTimesWithDifferentState");
+                Meter meter = new Meter("EnableListeningMultipleTimesWithDifferentState");
 
                 Counter<int> counter = meter.CreateCounter<int>("Counter");
 
@@ -1165,6 +1228,239 @@ namespace System.Diagnostics.Metrics.Tests
 
             }).Dispose();
         }
+
+        [ConditionalFact(typeof(RemoteExecutor), nameof(RemoteExecutor.IsSupported))]
+        public void TestMeterCreationWithOptions()
+        {
+            RemoteExecutor.Invoke(() =>
+            {
+                using Meter meter1 = new Meter("TestMeterCreationWithOptions1");
+                Assert.Equal("TestMeterCreationWithOptions1", meter1.Name);
+                Assert.Null(meter1.Version);
+                Assert.Null(meter1.Tags);
+                Assert.Null(meter1.Scope);
+
+                using Meter meter2 = new Meter("TestMeterCreationWithOptions2", "2.0", new TagList() { { "Key1", "Value1" } });
+                Assert.Equal("TestMeterCreationWithOptions2", meter2.Name);
+                Assert.Equal("2.0", meter2.Version);
+                Assert.Equal(new[] { new KeyValuePair<string, object?>("Key1", "Value1") }, meter2.Tags);
+                Assert.Null(meter2.Scope);
+
+                using Meter meter3 = new Meter("TestMeterCreationWithOptions3", "3.0", new TagList() { { "Key3", "Value3" } }, "Scope");
+                Assert.Equal("TestMeterCreationWithOptions3", meter3.Name);
+                Assert.Equal("3.0", meter3.Version);
+                Assert.Equal(new[] { new KeyValuePair<string, object?>("Key3", "Value3") }, meter3.Tags);
+                Assert.Equal("Scope", meter3.Scope);
+
+                Assert.Throws<ArgumentNullException>(() => new MeterOptions(null!));
+                Assert.Throws<ArgumentNullException>(() => new MeterOptions("Something").Name = null!);
+
+                using Meter meter4 = new Meter(new MeterOptions("TestMeterCreationWithOptions4"));
+                Assert.Equal("TestMeterCreationWithOptions4", meter4.Name);
+                Assert.Null(meter4.Version);
+                Assert.Null(meter4.Tags);
+                Assert.Null(meter4.Scope);
+
+                using Meter meter5 = new Meter(new MeterOptions("TestMeterCreationWithOptions5") { Version = "5.0" });
+                Assert.Equal("TestMeterCreationWithOptions5", meter5.Name);
+                Assert.Equal("5.0", meter5.Version);
+                Assert.Null(meter5.Tags);
+                Assert.Null(meter5.Scope);
+
+                using Meter meter6 = new Meter(new MeterOptions("TestMeterCreationWithOptions6") { Tags = new TagList() { { "Key6", "Value6"} } });
+                Assert.Equal("TestMeterCreationWithOptions6", meter6.Name);
+                Assert.Null(meter6.Version);
+                Assert.Equal(new[] { new KeyValuePair<string, object?>("Key6", "Value6") }, meter6.Tags);
+                Assert.Null(meter5.Scope);
+
+                using Meter meter7 = new Meter(new MeterOptions("TestMeterCreationWithOptions7") { Scope = "Scope7" });
+                Assert.Equal("TestMeterCreationWithOptions7", meter7.Name);
+                Assert.Null(meter7.Version);
+                Assert.Null(meter7.Tags);
+                Assert.Equal("Scope7", meter7.Scope);
+
+                using Meter meter8 = new Meter(new MeterOptions("TestMeterCreationWithOptions8") { Version = "8.0", Tags = new TagList() { { "Key8", "Value8" } }, Scope = "Scope8" });
+                Assert.Equal("TestMeterCreationWithOptions8", meter8.Name);
+                Assert.Equal("8.0", meter8.Version);
+                Assert.Equal(new[] { new KeyValuePair<string, object?>("Key8", "Value8") }, meter8.Tags);
+                Assert.Equal("Scope8", meter8.Scope);
+
+                // Test tags sorting order
+                TagList l = new TagList() { { "f", "a" }, { "d", "b" }, { "w", "b" }, { "h", new object() }, { "N", null }, { "a", "b" }, { "a", null } };
+                using Meter meter9 = new Meter(new MeterOptions("TestMeterCreationWithOptions9") { Version = "8.0", Tags = l, Scope = "Scope8" });
+                var insArray = meter9.Tags.ToArray();
+                Assert.Equal(l.Count, insArray.Length);
+                for (int i = 0; i < insArray.Length - 1; i++)
+                {
+                    Assert.True(string.Compare(insArray[i].Key, insArray[i + 1].Key, StringComparison.Ordinal) <= 0);
+                }
+            }).Dispose();
+        }
+
+        [ConditionalFact(typeof(RemoteExecutor), nameof(RemoteExecutor.IsSupported))]
+        public void TestCachedInstruments()
+        {
+            RemoteExecutor.Invoke(() =>
+            {
+                using Meter meter = new Meter("TestCachedInstruments");
+
+                Counter<int> counter1 = meter.CreateCounter<int>("name1");
+                Counter<int> counter2 = meter.CreateCounter<int>("name1");
+
+                Assert.True(object.ReferenceEquals(counter1, counter2));
+
+                Counter<int> counter3 = meter.CreateCounter<int>("name1", "unique");
+                Assert.False(object.ReferenceEquals(counter1, counter3));
+
+                var list1 = new List<KeyValuePair<string, object?>>
+                {
+                    new KeyValuePair<string, object?>("key1", "value1"),
+                    new KeyValuePair<string, object?>("key2", null)
+                };
+
+                Counter<int> counter4 = meter.CreateCounter<int>("name", null, null, list1);
+                Counter<int> counter5 = meter.CreateCounter<int>("name", null, null, list1);
+
+                Assert.True(object.ReferenceEquals(counter4, counter5));
+
+                Counter<int> counter6 = meter.CreateCounter<int>("name", "diff", null, list1);
+
+                Assert.False(object.ReferenceEquals(counter4, counter6));
+
+                Counter<long> counter7 = meter.CreateCounter<long>("name", null, null, list1);
+
+                Assert.False(object.ReferenceEquals(counter4, counter7));
+
+                var list2 = new List<KeyValuePair<string, object?>>
+                {
+                    new KeyValuePair<string, object?>("key1", "value1"),
+                    new KeyValuePair<string, object?>("key2", "value2")
+                };
+
+                Counter<int> counter8 = meter.CreateCounter<int>("name", null, null, list2);
+
+                Assert.False(object.ReferenceEquals(counter4, counter8));
+
+                Histogram<int> histogram1 = meter.CreateHistogram<int>("name", null, null, list2);
+
+                Assert.False(object.ReferenceEquals(counter8, histogram1));
+
+                Histogram<int> histogram2 = meter.CreateHistogram<int>("name", null, null, list2);
+
+                Assert.True(object.ReferenceEquals(histogram2, histogram1));
+
+                var list3 = new List<KeyValuePair<string, object?>>
+                {
+                    new KeyValuePair<string, object?>("key1", "value3"),
+                    new KeyValuePair<string, object?>("key2", "value2")
+                };
+
+                Histogram<int> histogram3 = meter.CreateHistogram<int>("name", null, null, list3);
+
+                Assert.False(object.ReferenceEquals(histogram3, histogram1));
+
+                UpDownCounter<int> upDownCounter1 = meter.CreateUpDownCounter<int>("name", null, null, list2);
+
+                Assert.False(object.ReferenceEquals(counter8, upDownCounter1));
+
+                UpDownCounter<int> upDownCounter2 = meter.CreateUpDownCounter<int>("name", null, null, list2);
+
+                Assert.True(object.ReferenceEquals(upDownCounter2, upDownCounter1));
+
+                UpDownCounter<int> upDownCounter3 = meter.CreateUpDownCounter<int>("name", null, null, list3);
+
+                Assert.False(object.ReferenceEquals(upDownCounter3, upDownCounter1));
+
+                //
+                // Test instrument creation with unordered tags
+                //
+
+                object o = new object();
+                TagList l1 = new TagList() { { "f", "a" }, { "d", "b" }, { "w", "b" }, { "h", o}, { "N", null }, { "a", "b" }, { "a", null } };
+                List<KeyValuePair<string, object?>> l2 = new List<KeyValuePair<string, object?>>()
+                {
+                    new KeyValuePair<string, object?>("w", "b"), new KeyValuePair<string, object?>("h", o), new KeyValuePair<string, object?>("a", null),
+                    new KeyValuePair<string, object?>("d", "b"), new KeyValuePair<string, object?>("f", "a"), new KeyValuePair<string, object?>("N", null),
+                    new KeyValuePair<string, object?>("a", "b")
+                };
+                HashSet<KeyValuePair<string, object?>> l3 = new HashSet<KeyValuePair<string, object?>>()
+                {
+                    new KeyValuePair<string, object?>("d", "b"), new KeyValuePair<string, object?>("f", "a"), new KeyValuePair<string, object?>("a", null),
+                    new KeyValuePair<string, object?>("w", "b"), new KeyValuePair<string, object?>("h", o), new KeyValuePair<string, object?>("a", "b"),
+                    new KeyValuePair<string, object?>("N", null)
+                };
+
+                Counter<int> counter9 = meter.CreateCounter<int>("name9", null, null, l1);
+                Counter<int> counter10 = meter.CreateCounter<int>("name9", null, null, l2);
+                Counter<int> counter11 = meter.CreateCounter<int>("name9", null, null, l3);
+                Assert.Same(counter9, counter10);
+                Assert.Same(counter9, counter11);
+
+                KeyValuePair<string, object?>[] t1 = counter9.Tags.ToArray();
+                Assert.Equal(l1.Count, t1.Length);
+                t1[0] = new KeyValuePair<string, object?>(t1[0].Key, "newValue"); // change value of one item;
+                Counter<int> counter12 = meter.CreateCounter<int>("name9", null, null, t1);
+                Assert.NotSame(counter9, counter12);
+
+            }).Dispose();
+        }
+
+        [ConditionalFact(typeof(RemoteExecutor), nameof(RemoteExecutor.IsSupported))]
+        public void TestInstrumentCreationWithTags()
+        {
+            RemoteExecutor.Invoke(() => {
+                using Meter meter = new Meter("TestInstrumentCreationWithTags");
+
+                Instrument ins1 = meter.CreateCounter<int>("counter", null, null, new TagList() { { "c1", "cv-1" } });
+                Assert.Equal(new[] { new KeyValuePair<string, object?>("c1", "cv-1") }, ins1.Tags);
+
+                Instrument ins2 = meter.CreateHistogram<double>("histogram", null, null, new TagList() { { "h1", "hv-1" } });
+                Assert.Equal(new[] { new KeyValuePair<string, object?>("h1", "hv-1") }, ins2.Tags);
+
+                Instrument ins3 = meter.CreateUpDownCounter<long>("UpDownCounter", null, null, new TagList() { { "udc1", "udc-v1" } });
+                Assert.Equal(new[] { new KeyValuePair<string, object?>("udc1", "udc-v1") }, ins3.Tags);
+
+                Instrument ins4 = meter.CreateObservableCounter<short>("ObservableCounter1", () => 1, null, null, new TagList() { { "oc1", "oc-v1" } });
+                Assert.Equal(new[] { new KeyValuePair<string, object?>("oc1", "oc-v1") }, ins4.Tags);
+
+                Instrument ins5 = meter.CreateObservableCounter<short>("ObservableCounter2", () => new Measurement<short>(2), null, null, new TagList() { { "oc2", "oc-v2" } });
+                Assert.Equal(new[] { new KeyValuePair<string, object?>("oc2", "oc-v2") }, ins5.Tags);
+
+                Instrument ins6 = meter.CreateObservableCounter<short>("ObservableCounter3", () => new Measurement<short>[] { new Measurement<short>(3) }, null, null, new TagList() { { "oc3", "oc-v3" } });
+                Assert.Equal(new[] { new KeyValuePair<string, object?>("oc3", "oc-v3") }, ins6.Tags);
+
+                Instrument ins7 = meter.CreateObservableGauge<long>("ObservableGauge1", () => 1, null, null, new TagList() { { "og1", "og-v1" } });
+                Assert.Equal(new[] { new KeyValuePair<string, object?>("og1", "og-v1") }, ins7.Tags);
+
+                Instrument ins8 = meter.CreateObservableGauge<long>("ObservableGauge2", () => new Measurement<long>(2), null, null, new TagList() { { "og2", "og-v2" } });
+                Assert.Equal(new[] { new KeyValuePair<string, object?>("og2", "og-v2") }, ins8.Tags);
+
+                Instrument ins9 = meter.CreateObservableGauge<long>("ObservableGauge3", () => new Measurement<long>[] { new Measurement<long>(3) }, null, null, new TagList() { { "og3", "og-v3" } });
+                Assert.Equal(new[] { new KeyValuePair<string, object?>("og3", "og-v3") }, ins9.Tags);
+
+                Instrument ins10 = meter.CreateObservableUpDownCounter<float>("ObservableUpDownCounter1", () => 1, null, null, new TagList() { { "oudc1", "oudc-v1" } });
+                Assert.Equal(new[] { new KeyValuePair<string, object?>("oudc1", "oudc-v1") }, ins10.Tags);
+
+                Instrument ins11 = meter.CreateObservableGauge<float>("ObservableUpDownCounter2", () => new Measurement<float>(2), null, null, new TagList() { { "oudc2", "oudc-v2" } });
+                Assert.Equal(new[] { new KeyValuePair<string, object?>("oudc2", "oudc-v2") }, ins11.Tags);
+
+                Instrument ins12 = meter.CreateObservableGauge<float>("ObservableUpDownCounter3", () => new Measurement<float>[] { new Measurement<float>(3) }, null, null, new TagList() { { "oudc3", "oudc-v3" } });
+                Assert.Equal(new[] { new KeyValuePair<string, object?>("oudc3", "oudc-v3") }, ins12.Tags);
+
+                // Test tags sorting order
+
+                TagList l = new TagList() { { "z", "a" }, { "y", "b" }, { "x", "b" }, { "m", new object() }, { "N", null }, { "a", "b" }, { "a", null } };
+                Instrument ins13 = meter.CreateCounter<int>("counter", null, null, l);
+                var insArray = ins13.Tags.ToArray();
+                Assert.Equal(l.Count, insArray.Length);
+                for (int i = 0; i < insArray.Length - 1; i++)
+                {
+                    Assert.True(string.Compare(insArray[i].Key, insArray[i + 1].Key, StringComparison.Ordinal) <= 0);
+                }
+
+            }).Dispose();
+        }
+
 
         private void PublishCounterMeasurement<T>(Counter<T> counter, T value, KeyValuePair<string, object?>[] tags) where T : struct
         {
@@ -1431,12 +1727,38 @@ namespace System.Diagnostics.Metrics.Tests
             if (typeof(T) == typeof(double)) { return (T)(object)Convert.ToDouble(value); }
             if (typeof(T) == typeof(decimal)) { return (T)(object)Convert.ToDecimal(value);}
 
-            Assert.True(false, "We encountered unsupported type");
+            Assert.Fail("We encountered unsupported type");
             return default;
         }
     }
     public static class DiagnosticsCollectionExtensions
     {
         public static void Add<T1, T2>(this ICollection<KeyValuePair<T1, T2>> collection, T1 item1, T2 item2) => collection?.Add(new KeyValuePair<T1, T2>(item1, item2));
+        public static bool Same<T>(this IEnumerable<Measurement<T>> measurements, IEnumerable<Measurement<T>> expected) where T : struct
+        {
+            IEnumerator<Measurement<T>> enumerator = measurements.GetEnumerator();
+            IEnumerator<Measurement<T>> expectedEnumerator = expected.GetEnumerator();
+
+            while (enumerator.MoveNext())
+            {
+                if (!expectedEnumerator.MoveNext())
+                {
+                    return false;
+                }
+
+                Measurement<T> measurement = enumerator.Current;
+                Measurement<T> expectedMeasurement = expectedEnumerator.Current;
+
+                if (measurement.Value.Equals(expectedMeasurement.Value) &&
+                    measurement.Tags.ToArray().SequenceEqual(expectedMeasurement.Tags.ToArray()))
+                {
+                    continue;
+                }
+
+                return false;
+            }
+
+            return !expectedEnumerator.MoveNext();
+        }
     }
 }

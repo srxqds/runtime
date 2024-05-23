@@ -1,6 +1,7 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
@@ -129,6 +130,8 @@ namespace System.Collections.Generic
             }
         }
 
+        [Obsolete(Obsoletions.LegacyFormatterImplMessage, DiagnosticId = Obsoletions.LegacyFormatterImplDiagId, UrlFormat = Obsoletions.SharedUrlFormat)]
+        [EditorBrowsable(EditorBrowsableState.Never)]
         protected HashSet(SerializationInfo info, StreamingContext context)
         {
             // We can't do anything with the keys and values until the entire graph has been
@@ -350,6 +353,11 @@ namespace System.Collections.Generic
         /// <summary>Gets the number of elements that are contained in the set.</summary>
         public int Count => _count - _freeCount;
 
+        /// <summary>
+        /// Gets the total numbers of elements the internal data structure can hold without resizing.
+        /// </summary>
+        public int Capacity => _entries?.Length ?? 0;
+
         bool ICollection<T>.IsReadOnly => false;
 
         #endregion
@@ -368,6 +376,8 @@ namespace System.Collections.Generic
 
         #region ISerializable methods
 
+        [Obsolete(Obsoletions.LegacyFormatterImplMessage, DiagnosticId = Obsoletions.LegacyFormatterImplDiagId, UrlFormat = Obsoletions.SharedUrlFormat)]
+        [EditorBrowsable(EditorBrowsableState.Never)]
         public virtual void GetObjectData(SerializationInfo info, StreamingContext context)
         {
             if (info == null)
@@ -1000,9 +1010,17 @@ namespace System.Collections.Generic
         /// Sets the capacity of a <see cref="HashSet{T}"/> object to the actual number of elements it contains,
         /// rounded up to a nearby, implementation-specific value.
         /// </summary>
-        public void TrimExcess()
+        public void TrimExcess() => TrimExcess(Count);
+
+        /// <summary>
+        /// Sets the capacity of a <see cref="HashSet{T}"/> object to the specified number of entries,
+        /// rounded up to a nearby, implementation-specific value.
+        /// </summary>
+        /// <param name="capacity">The new capacity.</param>
+        /// <exception cref="ArgumentOutOfRangeException">Passed capacity is lower than entries count.</exception>
+        public void TrimExcess(int capacity)
         {
-            int capacity = Count;
+            ArgumentOutOfRangeException.ThrowIfLessThan(capacity, Count);
 
             int newSize = HashHelpers.GetPrime(capacity);
             Entry[]? oldEntries = _entries;
@@ -1031,7 +1049,7 @@ namespace System.Collections.Generic
                 }
             }
 
-            _count = capacity;
+            _count = count;
             _freeCount = 0;
         }
 

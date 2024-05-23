@@ -12,7 +12,7 @@ namespace System.Text.Json.Serialization.Converters
     /// Implementation of <cref>JsonObjectConverter{T}</cref> that supports the deserialization
     /// of JSON objects using parameterized constructors.
     /// </summary>
-    internal class SmallObjectWithParameterizedConstructorConverter<T, TArg0, TArg1, TArg2, TArg3> : ObjectWithParameterizedConstructorConverter<T> where T : notnull
+    internal sealed class SmallObjectWithParameterizedConstructorConverter<T, TArg0, TArg1, TArg2, TArg3> : ObjectWithParameterizedConstructorConverter<T> where T : notnull
     {
         protected override object CreateObject(ref ReadStackFrame frame)
         {
@@ -64,17 +64,27 @@ namespace System.Text.Json.Serialization.Converters
 
             var info = (JsonParameterInfo<TArg>)jsonParameterInfo;
 
-            bool success = info.EffectiveConverter.TryRead(ref reader, info.ParameterType, info.Options, ref state, out TArg? value);
-
-            arg = value is null && jsonParameterInfo.IgnoreNullTokensOnRead
-                ? info.DefaultValue // Use default value specified on parameter, if any.
-                : value;
+            bool success = info.EffectiveConverter.TryRead(ref reader, info.ParameterType, info.Options, ref state, out TArg? value, out _);
 
             if (success)
             {
+                if (value is null)
+                {
+                    if (info.IgnoreNullTokensOnRead)
+                    {
+                        // Use default value specified on parameter, if any.
+                        value = info.DefaultValue;
+                    }
+                    else if (!info.IsNullable && info.Options.RespectNullableAnnotations)
+                    {
+                        ThrowHelper.ThrowJsonException_ConstructorParameterDisallowNull(info.Name, state.Current.JsonTypeInfo.Type);
+                    }
+                }
+
                 state.Current.MarkRequiredPropertyAsRead(jsonParameterInfo.MatchingProperty);
             }
 
+            arg = value;
             return success;
         }
 
@@ -83,13 +93,12 @@ namespace System.Text.Json.Serialization.Converters
             JsonTypeInfo typeInfo = state.Current.JsonTypeInfo;
 
             Debug.Assert(typeInfo.CreateObjectWithArgs != null);
+            Debug.Assert(typeInfo.ParameterCache != null);
 
             var arguments = new Arguments<TArg0, TArg1, TArg2, TArg3>();
 
-            List<KeyValuePair<string, JsonParameterInfo>> cache = typeInfo.ParameterCache!.List;
-            for (int i = 0; i < typeInfo.ParameterCount; i++)
+            foreach (JsonParameterInfo parameterInfo in typeInfo.ParameterCache)
             {
-                JsonParameterInfo parameterInfo = cache[i].Value;
                 switch (parameterInfo.Position)
                 {
                     case 0:
@@ -106,7 +115,7 @@ namespace System.Text.Json.Serialization.Converters
                         break;
                     default:
                         Debug.Fail("More than 4 params: we should be in override for LargeObjectWithParameterizedConstructorConverter.");
-                        throw new InvalidOperationException();
+                        break;
                 }
             }
 

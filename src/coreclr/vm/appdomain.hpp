@@ -43,7 +43,6 @@ class StringLiteralMap;
 class FrozenObjectHeapManager;
 class MngStdInterfacesInfo;
 class DomainAssembly;
-class LoadLevelLimiter;
 class TypeEquivalenceHashTable;
 
 #ifdef FEATURE_COMINTEROP
@@ -815,23 +814,19 @@ typedef FileLoadLock::Holder FileLoadLockHolder;
     typedef ListLockBase<NativeCodeVersion> JitListLock;
     typedef ListLockEntryBase<NativeCodeVersion> JitListLockEntry;
 
-
-#ifdef _MSC_VER
-#pragma warning(push)
-#pragma warning (disable: 4324) //sometimes 64bit compilers complain about alignment
-#endif
-class LoadLevelLimiter
+class LoadLevelLimiter final
 {
-    FileLoadLevel                   m_currentLevel;
+    static thread_local LoadLevelLimiter* t_currentLoadLevelLimiter;
+    FileLoadLevel m_currentLevel;
     LoadLevelLimiter* m_previousLimit;
-    BOOL m_bActive;
+    bool m_bActive;
 
 public:
 
     LoadLevelLimiter()
       : m_currentLevel(FILE_ACTIVE),
-      m_previousLimit(NULL),
-      m_bActive(FALSE)
+      m_previousLimit(nullptr),
+      m_bActive(false)
     {
         LIMITED_METHOD_CONTRACT;
     }
@@ -839,11 +834,11 @@ public:
     void Activate()
     {
         WRAPPER_NO_CONTRACT;
-        m_previousLimit= GetThread()->GetLoadLevelLimiter();
-        if(m_previousLimit)
-            m_currentLevel=m_previousLimit->GetLoadLevel();
-        GetThread()->SetLoadLevelLimiter(this);
-        m_bActive=TRUE;
+        m_previousLimit = t_currentLoadLevelLimiter;
+        if (m_previousLimit)
+            m_currentLevel = m_previousLimit->GetLoadLevel();
+        t_currentLoadLevelLimiter = this;
+        m_bActive = true;
     }
 
     void Deactivate()
@@ -851,8 +846,8 @@ public:
         WRAPPER_NO_CONTRACT;
         if (m_bActive)
         {
-            GetThread()->SetLoadLevelLimiter(m_previousLimit);
-            m_bActive=FALSE;
+            t_currentLoadLevelLimiter = m_previousLimit;
+            m_bActive = false;
         }
     }
 
@@ -882,10 +877,13 @@ public:
         LIMITED_METHOD_CONTRACT;
         m_currentLevel = level;
     }
+
+    static LoadLevelLimiter* GetCurrent()
+    {
+        LIMITED_METHOD_CONTRACT;
+        return t_currentLoadLevelLimiter;
+    }
 };
-#ifdef _MSC_VER
-#pragma warning (pop) //4324
-#endif
 
 #define OVERRIDE_LOAD_LEVEL_LIMIT(newLimit)                    \
     LoadLevelLimiter __newLimit;                                                    \
@@ -901,7 +899,6 @@ class BaseDomain
     friend class Assembly;
     friend class AssemblySpec;
     friend class AppDomain;
-    friend class AppDomainNative;
 
     VPTR_BASE_VTABLE_CLASS(BaseDomain)
     VPTR_UNIQUE(VPTR_UNIQUE_BaseDomain)
@@ -1041,6 +1038,12 @@ public:
         return ::CreatePinningHandle(m_handleStore, object);
     }
 
+    OBJECTHANDLE CreateWeakInteriorHandle(OBJECTREF object, void* pInteriorPointerLocation)
+    {
+        WRAPPER_NO_CONTRACT;
+        return ::CreateWeakInteriorHandle(m_handleStore, object, pInteriorPointerLocation);
+    }
+
     OBJECTHANDLE CreateSizedRefHandle(OBJECTREF object)
     {
         WRAPPER_NO_CONTRACT;
@@ -1065,12 +1068,6 @@ public:
         return ::CreateRefcountedHandle(m_handleStore, object);
     }
 #endif // FEATURE_COMINTEROP || FEATURE_COMWRAPPERS
-
-    OBJECTHANDLE CreateVariableHandle(OBJECTREF object, UINT type)
-    {
-        WRAPPER_NO_CONTRACT;
-        return ::CreateVariableHandle(m_handleStore, object, type);
-    }
 
     OBJECTHANDLE CreateDependentHandle(OBJECTREF primary, OBJECTREF secondary)
     {
@@ -1217,14 +1214,26 @@ public:
     friend class LoadLockHolder;
 public:
     void InitVSD();
-    RangeList *GetCollectibleVSDRanges() { return &m_collVSDRanges; }
 
 private:
     TypeIDMap m_typeIDMap;
-    // Range list for collectible types. Maps VSD PCODEs back to the VirtualCallStubManager they belong to
-    LockedRangeList m_collVSDRanges;
+
+    // MethodTable to `typeIndex` map. `typeIndex` is embedded in the code during codegen.
+    // During execution corresponding thread static data blocks are stored in `t_NonGCThreadStaticBlocks`
+    // and `t_GCThreadStaticBlocks` array at the `typeIndex`.
+    TypeIDMap m_NonGCThreadStaticBlockTypeIDMap;
+    TypeIDMap m_GCThreadStaticBlockTypeIDMap;
 
 public:
+
+    void InitThreadStaticBlockTypeMap();
+
+    UINT32 GetNonGCThreadStaticTypeIndex(PTR_MethodTable pMT);
+    UINT32 GetGCThreadStaticTypeIndex(PTR_MethodTable pMT);
+
+    PTR_MethodTable LookupNonGCThreadStaticBlockType(UINT32 id);
+    PTR_MethodTable LookupGCThreadStaticBlockType(UINT32 id);
+
     UINT32 GetTypeID(PTR_MethodTable pMT);
     UINT32 LookupTypeID(PTR_MethodTable pMT);
     PTR_MethodTable LookupType(UINT32 id);
@@ -1490,7 +1499,6 @@ const DWORD DefaultADID = 1;
 class AppDomain : public BaseDomain
 {
     friend class SystemDomain;
-    friend class AppDomainNative;
     friend class AssemblyNative;
     friend class AssemblySpec;
     friend class ClassLoader;
@@ -1532,7 +1540,7 @@ public:
     virtual PTR_AppDomain AsAppDomain() { LIMITED_METHOD_CONTRACT; return dac_cast<PTR_AppDomain>(this); }
 
     OBJECTREF GetRawExposedObject() { LIMITED_METHOD_CONTRACT; return NULL; }
-    OBJECTHANDLE GetRawExposedObjectHandleForDebugger() { LIMITED_METHOD_DAC_CONTRACT; return NULL; }
+    OBJECTHANDLE GetRawExposedObjectHandleForDebugger() { LIMITED_METHOD_DAC_CONTRACT; return (OBJECTHANDLE)NULL; }
 
 #ifndef DACCESS_COMPILE
     PTR_NativeImage GetNativeImage(LPCUTF8 compositeFileName);
@@ -1794,7 +1802,6 @@ public:
     CHECK CheckLoading(DomainAssembly *pFile, FileLoadLevel level);
 
     BOOL IsLoading(DomainAssembly *pFile, FileLoadLevel level);
-    static FileLoadLevel GetThreadFileLoadLevel();
 
     void LoadDomainAssembly(DomainAssembly *pFile,
                         FileLoadLevel targetLevel);
@@ -1852,7 +1859,7 @@ public:
     BOOL IsCached(AssemblySpec *pSpec);
 #endif // DACCESS_COMPILE
 
-    BOOL AddFileToCache(AssemblySpec* pSpec, PEAssembly *pPEAssembly, BOOL fAllowFailure = FALSE);
+    BOOL AddFileToCache(AssemblySpec* pSpec, PEAssembly *pPEAssembly);
     BOOL RemoveFileFromCache(PEAssembly *pPEAssembly);
 
     BOOL AddAssemblyToCache(AssemblySpec* pSpec, DomainAssembly *pAssembly);
@@ -1886,14 +1893,9 @@ public:
 #endif
     void SetFriendlyName(LPCWSTR pwzFriendlyName, BOOL fDebuggerCares = TRUE);
 
-    //****************************************************************************************
-
-    // This can be used to override the binding behavior of the appdomain.   It
-    // is overridden in the compilation domain.  It is important that all
-    // static binding goes through this path.
-    virtual PEAssembly * BindAssemblySpec(
+    PEAssembly * BindAssemblySpec(
         AssemblySpec *pSpec,
-        BOOL fThrowOnFileNotFound) DAC_EMPTY_RET(NULL);
+        BOOL fThrowOnFileNotFound);
 
     //****************************************************************************************
     //
@@ -2144,7 +2146,7 @@ public:
     void AddMemoryPressure();
     void RemoveMemoryPressure();
 
-    Assembly *GetRootAssembly()
+    PTR_Assembly GetRootAssembly()
     {
         LIMITED_METHOD_CONTRACT;
         return m_pRootAssembly;
@@ -2264,7 +2266,7 @@ private:
         using key_t = LPCWSTR;
         static const key_t GetKey(_In_ const element_t& e) { return e.Name; }
         static count_t Hash(_In_ key_t key) { return HashString(key); }
-        static bool Equals(_In_ key_t lhs, _In_ key_t rhs) { return wcscmp(lhs, rhs) == 0; }
+        static bool Equals(_In_ key_t lhs, _In_ key_t rhs) { return u16_strcmp(lhs, rhs) == 0; }
         static bool IsNull(_In_ const element_t& e) { return e.Handle == NULL; }
         static const element_t Null() { return UnmanagedImageCacheEntry(); }
     };
@@ -2324,7 +2326,6 @@ typedef VPTR(class SystemDomain) PTR_SystemDomain;
 
 class SystemDomain : public BaseDomain
 {
-    friend class AppDomainNative;
     friend class ClrDataAccess;
 
     VPTR_VTABLE_CLASS(SystemDomain, BaseDomain)
@@ -2382,7 +2383,7 @@ public:
     //****************************************************************************************
     //
     // Global Static to get the one and only system domain
-    static SystemDomain * System()
+    static PTR_SystemDomain System()
     {
         LIMITED_METHOD_DAC_CONTRACT;
 
@@ -2439,12 +2440,24 @@ public:
     }
     static FrozenObjectHeapManager* GetFrozenObjectHeapManager()
     {
-        WRAPPER_NO_CONTRACT;
-        if (m_FrozenObjectHeapManager == NULL)
+        CONTRACTL
+        {
+            THROWS;
+            MODE_COOPERATIVE;
+        }
+        CONTRACTL_END;
+
+        if (VolatileLoad(&m_FrozenObjectHeapManager) == nullptr)
         {
             LazyInitFrozenObjectsHeap();
         }
-        return m_FrozenObjectHeapManager;
+        return VolatileLoad(&m_FrozenObjectHeapManager);
+    }
+    static FrozenObjectHeapManager* GetFrozenObjectHeapManagerNoThrow()
+    {
+        LIMITED_METHOD_CONTRACT;
+
+        return VolatileLoad(&m_FrozenObjectHeapManager);
     }
 #endif // DACCESS_COMPILE
 

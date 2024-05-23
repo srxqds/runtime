@@ -24,8 +24,7 @@ namespace ILCompiler.DependencyAnalysis
 
         public ReflectedMethodNode(MethodDesc method)
         {
-            Debug.Assert(!method.IsCanonicalMethod(CanonicalFormKind.Any) ||
-                method.GetCanonMethodTarget(CanonicalFormKind.Specific) == method);
+            Debug.Assert(method.GetCanonMethodTarget(CanonicalFormKind.Specific) == method);
             _method = method;
         }
 
@@ -53,12 +52,6 @@ namespace ILCompiler.DependencyAnalysis
                 dependencies.Add(factory.ReflectedMethod(typicalMethod), "Definition of the reflectable method");
             }
 
-            MethodDesc canonMethod = _method.GetCanonMethodTarget(CanonicalFormKind.Specific);
-            if (canonMethod != _method)
-            {
-                dependencies.Add(factory.ReflectedMethod(canonMethod), "Canonical version of the reflectable method");
-            }
-
             // Make sure we generate the method body and other artifacts.
             if (MetadataManager.IsMethodSupportedInReflectionInvoke(_method))
             {
@@ -75,18 +68,14 @@ namespace ILCompiler.DependencyAnalysis
                     }
                     else
                     {
-                        if (!factory.VTable(slotDefiningMethod.OwningType).HasFixedSlots)
+                        if (ReflectionVirtualInvokeMapNode.NeedsVirtualInvokeInfo(factory, slotDefiningMethod) && !factory.VTable(slotDefiningMethod.OwningType).HasKnownVirtualMethodUse)
                             dependencies.Add(factory.VirtualMethodUse(slotDefiningMethod), "Virtually callable reflectable method");
                     }
                 }
 
                 if (!_method.IsAbstract)
                 {
-                    dependencies.Add(factory.MethodEntrypoint(canonMethod), "Body of a reflectable method");
-
-                    if (_method.HasInstantiation
-                        && _method != canonMethod)
-                        dependencies.Add(factory.MethodGenericDictionary(_method), "Dictionary of a reflectable method");
+                    dependencies.Add(factory.MethodEntrypoint(_method), "Body of a reflectable method");
                 }
             }
 

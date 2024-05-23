@@ -20,7 +20,7 @@ enum NamedIntrinsic : unsigned short
     NI_System_BitConverter_Int64BitsToDouble,
     NI_System_BitConverter_SingleToInt32Bits,
 
-    NI_System_Buffer_Memmove,
+    NI_System_SpanHelpers_Memmove,
 
     NI_SYSTEM_MATH_START,
     NI_System_Math_Abs,
@@ -37,15 +37,23 @@ enum NamedIntrinsic : unsigned short
     NI_System_Math_Cosh,
     NI_System_Math_Exp,
     NI_System_Math_Floor,
-    NI_System_Math_FMod,
     NI_System_Math_FusedMultiplyAdd,
     NI_System_Math_ILogB,
     NI_System_Math_Log,
     NI_System_Math_Log2,
     NI_System_Math_Log10,
     NI_System_Math_Max,
+    NI_System_Math_MaxMagnitude,
+    NI_System_Math_MaxMagnitudeNumber,
+    NI_System_Math_MaxNumber,
     NI_System_Math_Min,
+    NI_System_Math_MinMagnitude,
+    NI_System_Math_MinMagnitudeNumber,
+    NI_System_Math_MinNumber,
+    NI_System_Math_MultiplyAddEstimate,
     NI_System_Math_Pow,
+    NI_System_Math_ReciprocalEstimate,
+    NI_System_Math_ReciprocalSqrtEstimate,
     NI_System_Math_Round,
     NI_System_Math_Sin,
     NI_System_Math_Sinh,
@@ -60,12 +68,19 @@ enum NamedIntrinsic : unsigned short
     NI_System_Buffers_Binary_BinaryPrimitives_ReverseEndianness,
 
     NI_System_GC_KeepAlive,
+
+    NI_System_Text_UTF8Encoding_UTF8EncodingSealed_ReadUtf8,
+
     NI_System_Threading_Thread_get_CurrentThread,
     NI_System_Threading_Thread_get_ManagedThreadId,
+    NI_System_Threading_Volatile_Read,
+    NI_System_Threading_Volatile_Write,
     NI_System_Type_get_IsEnum,
     NI_System_Type_GetEnumUnderlyingType,
     NI_System_Type_get_IsValueType,
+    NI_System_Type_get_IsPrimitive,
     NI_System_Type_get_IsByRefLike,
+    NI_System_Type_get_TypeHandle,
     NI_System_Type_IsAssignableFrom,
     NI_System_Type_IsAssignableTo,
     NI_System_Type_op_Equality,
@@ -77,7 +92,8 @@ enum NamedIntrinsic : unsigned short
     NI_System_Array_GetUpperBound,
     NI_System_Object_MemberwiseClone,
     NI_System_Object_GetType,
-    NI_System_RuntimeTypeHandle_GetValueInternal,
+    NI_System_RuntimeTypeHandle_ToIntPtr,
+    NI_System_RuntimeType_get_TypeHandle,
     NI_System_StubHelpers_GetStubContext,
     NI_System_StubHelpers_NextCallReturnAddress,
 
@@ -87,7 +103,6 @@ enum NamedIntrinsic : unsigned short
 
     NI_System_Activator_AllocatorOf,
     NI_System_Activator_DefaultConstructorOf,
-    NI_System_EETypePtr_EETypePtrOf,
 
     NI_Internal_Runtime_MethodTable_Of,
 
@@ -102,8 +117,11 @@ enum NamedIntrinsic : unsigned short
     NI_System_String_get_Length,
     NI_System_String_op_Implicit,
     NI_System_String_StartsWith,
+    NI_System_String_EndsWith,
     NI_System_Span_get_Item,
     NI_System_Span_get_Length,
+    NI_System_SpanHelpers_ClearWithoutReferences,
+    NI_System_SpanHelpers_Fill,
     NI_System_SpanHelpers_SequenceEqual,
     NI_System_ReadOnlySpan_get_Item,
     NI_System_ReadOnlySpan_get_Length,
@@ -112,6 +130,7 @@ enum NamedIntrinsic : unsigned short
     NI_System_MemoryExtensions_Equals,
     NI_System_MemoryExtensions_SequenceEqual,
     NI_System_MemoryExtensions_StartsWith,
+    NI_System_MemoryExtensions_EndsWith,
 
     NI_System_Threading_Interlocked_And,
     NI_System_Threading_Interlocked_Or,
@@ -124,11 +143,11 @@ enum NamedIntrinsic : unsigned short
 #ifdef FEATURE_HW_INTRINSICS
     NI_HW_INTRINSIC_START,
 #if defined(TARGET_XARCH)
-#define HARDWARE_INTRINSIC(isa, name, size, numarg, t1, t2, t3, t4, t5, t6, t7, t8, t9, t10, category, flag)           \
+#define HARDWARE_INTRINSIC(isa, name, size, numarg, extra, t1, t2, t3, t4, t5, t6, t7, t8, t9, t10, category, flag)    \
     NI_##isa##_##name,
 #include "hwintrinsiclistxarch.h"
 #elif defined(TARGET_ARM64)
-#define HARDWARE_INTRINSIC(isa, name, size, numarg, t1, t2, t3, t4, t5, t6, t7, t8, t9, t10, category, flag)           \
+#define HARDWARE_INTRINSIC(isa, name, size, numarg, extra, t1, t2, t3, t4, t5, t6, t7, t8, t9, t10, category, flag)    \
     NI_##isa##_##name,
 #include "hwintrinsiclistarm64.h"
 #endif // !defined(TARGET_XARCH) && !defined(TARGET_ARM64)
@@ -211,6 +230,8 @@ enum NamedIntrinsic : unsigned short
 
     NI_PRIMITIVE_START,
 
+    NI_PRIMITIVE_ConvertToInteger,
+    NI_PRIMITIVE_ConvertToIntegerNative,
     NI_PRIMITIVE_Crc32C,
     NI_PRIMITIVE_LeadingZeroCount,
     NI_PRIMITIVE_Log2,

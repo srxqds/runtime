@@ -13,11 +13,13 @@ using Xunit;
 using Xunit.Abstractions;
 using System.Diagnostics.Tracing;
 using System.Net.Sockets;
+using System.Reflection;
 using Microsoft.Quic;
-using static Microsoft.Quic.MsQuic;
 
 namespace System.Net.Quic.Tests
 {
+    using Configuration = System.Net.Test.Common.Configuration;
+
     public abstract class QuicTestBase : IDisposable
     {
         public const long DefaultStreamErrorCodeClient = 123456;
@@ -29,9 +31,9 @@ namespace System.Net.Quic.Tests
         private static readonly byte[] s_pong = "PONG"u8.ToArray();
 
         public static bool IsSupported => QuicListener.IsSupported && QuicConnection.IsSupported;
+        public static bool IsNotArm32CoreClrStressTest => !(CoreClrConfigurationDetection.IsStressTest && PlatformDetection.IsArmProcess);
 
-        private static readonly Lazy<bool> _isIPv6Available = new Lazy<bool>(GetIsIPv6Available);
-        public static bool IsIPv6Available => _isIPv6Available.Value;
+        public static bool IsIPv6Available => Configuration.Sockets.IsIPv6LoopbackAvailable;
 
         public static SslApplicationProtocol ApplicationProtocol { get; } = new SslApplicationProtocol("quictest");
 
@@ -42,23 +44,7 @@ namespace System.Net.Quic.Tests
         public const int PassingTestTimeoutMilliseconds = 4 * 60 * 1000;
         public static TimeSpan PassingTestTimeout => TimeSpan.FromMilliseconds(PassingTestTimeoutMilliseconds);
 
-        static unsafe QuicTestBase()
-        {
-            Console.WriteLine($"MsQuic {(IsSupported ? "supported" : "not supported")} and using '{MsQuicApi.MsQuicLibraryVersion}'.");
-
-            if (IsSupported)
-            {
-                QUIC_SETTINGS settings = default(QUIC_SETTINGS);
-                settings.IsSet.MaxWorkerQueueDelayUs = 1;
-                settings.MaxWorkerQueueDelayUs = 2_500_000u; // 2.5s, 10x the default
-                if (StatusFailed(MsQuicApi.Api.ApiTable->SetParam(null, QUIC_PARAM_GLOBAL_SETTINGS, (uint)sizeof(QUIC_SETTINGS), (byte*)&settings)))
-                {
-                    Console.WriteLine($"Unable to set MsQuic MaxWorkerQueueDelayUs.");
-                }
-            }
-        }
-
-        public unsafe QuicTestBase(ITestOutputHelper output)
+        public QuicTestBase(ITestOutputHelper output)
         {
             _output = output;
         }
@@ -102,13 +88,13 @@ namespace System.Net.Quic.Tests
             };
         }
 
-        public SslClientAuthenticationOptions GetSslClientAuthenticationOptions()
+        public SslClientAuthenticationOptions GetSslClientAuthenticationOptions(string targetHost = "localhost")
         {
             return new SslClientAuthenticationOptions()
             {
                 ApplicationProtocols = new List<SslApplicationProtocol>() { ApplicationProtocol },
                 RemoteCertificateValidationCallback = RemoteCertificateValidationCallback,
-                TargetHost = "localhost"
+                TargetHost = targetHost
             };
         }
 
@@ -134,19 +120,20 @@ namespace System.Net.Quic.Tests
             return QuicConnection.ConnectAsync(clientOptions);
         }
 
-        internal QuicListenerOptions CreateQuicListenerOptions()
+        internal QuicListenerOptions CreateQuicListenerOptions(IPAddress address = null)
         {
+            address ??= IPAddress.Loopback;
             return new QuicListenerOptions()
             {
-                ListenEndPoint = new IPEndPoint(IPAddress.Loopback, 0),
+                ListenEndPoint = new IPEndPoint(address, 0),
                 ApplicationProtocols = new List<SslApplicationProtocol>() { ApplicationProtocol },
                 ConnectionOptionsCallback = (_, _, _) => ValueTask.FromResult(CreateQuicServerOptions())
             };
         }
 
-        internal ValueTask<QuicListener> CreateQuicListener(int MaxInboundUnidirectionalStreams = 100, int MaxInboundBidirectionalStreams = 100)
+        internal ValueTask<QuicListener> CreateQuicListener(IPAddress address = null)
         {
-            var options = CreateQuicListenerOptions();
+            var options = CreateQuicListenerOptions(address);
             return CreateQuicListener(options);
         }
 
@@ -387,20 +374,6 @@ namespace System.Net.Quic.Tests
             finally
             {
                 ArrayPool<byte>.Shared.Return(buffer);
-            }
-        }
-
-        internal static bool GetIsIPv6Available()
-        {
-            try
-            {
-                using Socket s = new Socket(AddressFamily.InterNetworkV6, SocketType.Dgram, ProtocolType.Udp);
-                s.Bind(new IPEndPoint(IPAddress.IPv6Loopback, 0));
-                return true;
-            }
-            catch (SocketException)
-            {
-                return false;
             }
         }
     }

@@ -2,22 +2,22 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System;
-using System.IO;
 using System.Collections;
-using System.Reflection;
-using System.Reflection.Emit;
-using System.Xml.Schema;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
+using System.IO;
+using System.Reflection;
+using System.Reflection.Emit;
+using System.Runtime.CompilerServices;
+using System.Runtime.Versioning;
 using System.Text;
 using System.Threading;
-using System.Runtime.Versioning;
-using System.Collections.Generic;
-using System.Xml.Serialization;
 using System.Xml;
-using System.Diagnostics.CodeAnalysis;
-using System.Runtime.CompilerServices;
+using System.Xml.Schema;
+using System.Xml.Serialization;
 
 namespace System.Xml.Serialization
 {
@@ -411,7 +411,7 @@ namespace System.Xml.Serialization
 #if DEBUG
                 const string escapeChars = "<>\"'&";
                 ReadOnlySpan<char> span = _primitivesBuffer;
-                Debug.Assert(span.Slice(0, charsWritten).IndexOfAny(escapeChars) == -1, "Primitive value contains illegal xml char.");
+                Debug.Assert(!span.Slice(0, charsWritten).ContainsAny(escapeChars), "Primitive value contains illegal xml char.");
 #endif
                 //all the primitive types except string and XmlQualifiedName writes to the buffer
                 _w.WriteRaw(_primitivesBuffer, 0, charsWritten);
@@ -433,7 +433,7 @@ namespace System.Xml.Serialization
 
         private string GetQualifiedName(string name, string? ns)
         {
-            if (ns == null || ns.Length == 0) return name;
+            if (string.IsNullOrEmpty(ns)) return name;
             string? prefix = _w.LookupPrefix(ns);
             if (prefix == null)
             {
@@ -518,7 +518,7 @@ namespace System.Xml.Serialization
             if (writePrefixed && prefix == null && ns != null && ns.Length > 0)
             {
                 prefix = _w.LookupPrefix(ns);
-                if (prefix == null || prefix.Length == 0)
+                if (string.IsNullOrEmpty(prefix))
                 {
                     prefix = NextPrefix();
                 }
@@ -527,7 +527,7 @@ namespace System.Xml.Serialization
             {
                 xmlns.TryLookupPrefix(ns, out prefix);
             }
-            if (needEmptyDefaultNamespace && prefix == null && ns != null && ns.Length != 0)
+            if (needEmptyDefaultNamespace && prefix == null && !string.IsNullOrEmpty(ns))
                 prefix = NextPrefix();
             _w.WriteStartElement(prefix, name, ns);
             if (_namespaces != null)
@@ -536,9 +536,9 @@ namespace System.Xml.Serialization
                 {
                     string alias = qname.Name;
                     string? aliasNs = qname.Namespace;
-                    if (alias.Length == 0 && (aliasNs == null || aliasNs.Length == 0))
+                    if (alias.Length == 0 && string.IsNullOrEmpty(aliasNs))
                         continue;
-                    if (aliasNs == null || aliasNs.Length == 0)
+                    if (string.IsNullOrEmpty(aliasNs))
                     {
                         if (alias.Length > 0)
                             throw new InvalidOperationException(SR.Format(SR.XmlInvalidXmlns, alias));
@@ -606,7 +606,7 @@ namespace System.Xml.Serialization
 
         protected void WriteNullTagEncoded(string? name, string? ns)
         {
-            if (name == null || name.Length == 0)
+            if (string.IsNullOrEmpty(name))
                 return;
             WriteStartElement(name, ns, null, true);
             _w.WriteAttributeString("nil", XmlSchema.InstanceNamespace, "true");
@@ -620,7 +620,7 @@ namespace System.Xml.Serialization
 
         protected void WriteNullTagLiteral(string? name, string? ns)
         {
-            if (name == null || name.Length == 0)
+            if (string.IsNullOrEmpty(name))
                 return;
             WriteStartElement(name, ns, null, false);
             _w.WriteAttributeString("nil", XmlSchema.InstanceNamespace, "true");
@@ -634,7 +634,7 @@ namespace System.Xml.Serialization
 
         protected void WriteEmptyTag(string? name, string? ns)
         {
-            if (name == null || name.Length == 0)
+            if (string.IsNullOrEmpty(name))
                 return;
             WriteStartElement(name, ns, null, false);
             _w.WriteEndElement();
@@ -958,7 +958,7 @@ namespace System.Xml.Serialization
                     {
                         string? prefix = _w.LookupPrefix(ns);
 
-                        if (prefix == null || prefix.Length == 0)
+                        if (string.IsNullOrEmpty(prefix))
                         {
                             prefix = "xml";
                         }
@@ -1157,7 +1157,7 @@ namespace System.Xml.Serialization
         protected void WriteElementQualifiedName(string localName, string? ns, XmlQualifiedName? value, XmlQualifiedName? xsiType)
         {
             if (value == null) return;
-            if (value.Namespace == null || value.Namespace.Length == 0)
+            if (string.IsNullOrEmpty(value.Namespace))
             {
                 WriteStartElement(localName, ns, null, true);
                 WriteAttribute("xmlns", "");
@@ -1446,7 +1446,7 @@ namespace System.Xml.Serialization
                             throw new InvalidOperationException(SR.Format(SR.XmlDuplicateNs, prefix, ns));
                         }
                     }
-                    string? oldPrefix = (ns == null || ns.Length == 0) ? null : Writer.LookupPrefix(ns);
+                    string? oldPrefix = string.IsNullOrEmpty(ns) ? null : Writer.LookupPrefix(ns);
 
                     if (oldPrefix == null || oldPrefix != prefix)
                     {
@@ -2028,7 +2028,7 @@ namespace System.Xml.Serialization
                 createInstance.Append(".NonPublic");
             }
 
-            if (arg == null || arg.Length == 0)
+            if (string.IsNullOrEmpty(arg))
             {
                 createInstance.Append(", null, new object[0], null)");
             }
@@ -2466,7 +2466,7 @@ namespace System.Xml.Serialization
                         string[] values = ((string)defaultValue!).Split(null);
                         for (int i = 0; i < values.Length; i++)
                         {
-                            if (values[i] == null || values[i].Length == 0)
+                            if (string.IsNullOrEmpty(values[i]))
                                 continue;
                             if (i > 0)
                                 Writer.WriteLine(" | ");
@@ -4476,7 +4476,7 @@ namespace System.Xml.Serialization
                     }
                 }
             }
-            if (enumValue == null || enumValue.Length == 0)
+            if (string.IsNullOrEmpty(enumValue))
             {
                 if (element.Any && element.Name.Length == 0)
                 {

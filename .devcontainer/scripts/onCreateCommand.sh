@@ -2,9 +2,22 @@
 
 set -e
 
-# bump the dotnet sdk version to get msbuild bugfix: https://github.com/dotnet/msbuild/issues/8531
-# TODO: remove once we're on a newer sdk in global.json
-sed -i 's/8.0.100-preview.1.23115.2/8.0.100-preview.3.23159.20/g' global.json || true
+function wasm_common() {
+    case "$1" in
+    wasm)
+        # Put your common commands for wasm here
+        ./build.sh mono+libs -os browser -c Release
+        ;;
+    wasm-multithreaded)
+        # Put your common commands for wasm-multithread here
+        ./build.sh mono+libs -os browser -c Release /p:WasmEnableThreads=true
+        ;;
+    *)
+        # install dotnet-serve for running wasm samples
+    ./dotnet.sh tool install dotnet-serve --version 1.10.172 --tool-path ./.dotnet-tools-global
+    ;;
+    esac
+}
 
 opt=$1
 case "$opt" in
@@ -16,14 +29,19 @@ case "$opt" in
         ./build.sh libs.tests -restore
     ;;
 
-    wasm)
-        # prebuild for WASM, so it is ready for wasm development
-        make -C src/mono/wasm provision-wasm
-        export EMSDK_PATH=$PWD/src/mono/wasm/emsdk
-        ./build.sh mono+libs -os browser -c Release
+    android)
+        # prebuild the repo for Mono, so it is ready for development
+        ./build.sh mono+libs -os android
+        # restore libs tests so that the project is ready to be loaded by OmniSharp
+        ./build.sh libs.tests -restore
+    ;;
 
-        # install dotnet-serve for running wasm samples
-        ./dotnet.sh tool install dotnet-serve --tool-path ./.dotnet-tools-global
+    wasm)
+        wasm_common $opt
+    ;;
+
+    wasm-multithreaded)
+        wasm_common $opt
     ;;
 esac
 

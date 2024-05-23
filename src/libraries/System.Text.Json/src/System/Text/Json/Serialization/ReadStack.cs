@@ -1,7 +1,6 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System.Buffers;
 using System.Collections;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
@@ -16,9 +15,25 @@ namespace System.Text.Json
     internal struct ReadStack
     {
         /// <summary>
-        /// Exposes the stackframe that is currently active.
+        /// Exposes the stack frame that is currently active.
         /// </summary>
         public ReadStackFrame Current;
+
+        /// <summary>
+        /// Gets the parent stack frame, if it exists.
+        /// </summary>
+        public readonly ref ReadStackFrame Parent
+        {
+            get
+            {
+                Debug.Assert(_count > 1);
+                Debug.Assert(_stack is not null);
+                return ref _stack[_count - 2];
+            }
+        }
+
+        public readonly JsonPropertyInfo? ParentProperty
+            => Current.HasParentObject ? Parent.JsonPropertyInfo : null;
 
         /// <summary>
         /// Buffer containing all frames in the stack. For performance it is only populated for serialization depths > 1.
@@ -36,19 +51,9 @@ namespace System.Text.Json
         private int _continuationCount;
 
         /// <summary>
-        /// Bytes consumed in the current loop.
-        /// </summary>
-        public long BytesConsumed;
-
-        /// <summary>
         /// Indicates that the state still contains suspended frames waiting re-entry.
         /// </summary>
-        public bool IsContinuation => _continuationCount != 0;
-
-        /// <summary>
-        /// Internal flag to let us know that we need to read ahead in the inner read loop.
-        /// </summary>
-        public bool ReadAhead;
+        public readonly bool IsContinuation => _continuationCount != 0;
 
         // The bag of preservable references.
         public ReferenceResolver ReferenceResolver;
@@ -110,7 +115,7 @@ namespace System.Text.Json
             {
                 if (_count == 0)
                 {
-                    // Performance optimization: reuse the first stackframe on the first push operation.
+                    // Performance optimization: reuse the first stack frame on the first push operation.
                     // NB need to be careful when making writes to Current _before_ the first `Push`
                     // operation is performed.
                     _count = 1;
@@ -350,7 +355,7 @@ namespace System.Text.Json
                     {
                         // Attempt to get the JSON property name from the JsonPropertyInfo or JsonParameterInfo.
                         utf8PropertyName = frame.JsonPropertyInfo?.NameAsUtf8Bytes ??
-                            frame.CtorArgumentState?.JsonParameterInfo?.NameAsUtf8Bytes;
+                            frame.CtorArgumentState?.JsonParameterInfo?.JsonNameAsUtf8Bytes;
                     }
                 }
 
@@ -371,26 +376,26 @@ namespace System.Text.Json
 
             for (int i = 0; i < _count - 1; i++)
             {
-                if (_stack[i].JsonTypeInfo.Converter.ConstructorIsParameterized)
+                if (_stack[i].JsonTypeInfo.UsesParameterizedConstructor)
                 {
                     return _stack[i].JsonTypeInfo;
                 }
             }
 
-            Debug.Assert(Current.JsonTypeInfo.Converter.ConstructorIsParameterized);
+            Debug.Assert(Current.JsonTypeInfo.UsesParameterizedConstructor);
             return Current.JsonTypeInfo;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void SetConstructorArgumentState()
         {
-            if (Current.JsonTypeInfo.Converter.ConstructorIsParameterized)
+            if (Current.JsonTypeInfo.UsesParameterizedConstructor)
             {
                 Current.CtorArgumentState ??= new();
             }
         }
 
         [DebuggerBrowsable(DebuggerBrowsableState.Never)]
-        private string DebuggerDisplay => $"Path:{JsonPath()} Current: ConverterStrategy.{Current.JsonTypeInfo?.Converter.ConverterStrategy}, {Current.JsonTypeInfo?.Type.Name}";
+        private string DebuggerDisplay => $"Path = {JsonPath()}, Current = ConverterStrategy.{Current.JsonTypeInfo?.Converter.ConverterStrategy}, {Current.JsonTypeInfo?.Type.Name}";
     }
 }

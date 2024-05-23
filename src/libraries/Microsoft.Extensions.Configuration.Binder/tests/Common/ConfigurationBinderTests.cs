@@ -4,9 +4,14 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Diagnostics;
+using System.Globalization;
 using System.Linq;
 using System.Reflection;
+#if BUILDING_SOURCE_GENERATOR_TESTS
 using Microsoft.Extensions.Configuration;
+#endif
+using Microsoft.Extensions.Configuration.Memory;
 using Microsoft.Extensions.Configuration.Test;
 using Xunit;
 
@@ -16,9 +21,19 @@ namespace Microsoft.Extensions
 #endif
     .Configuration.Binder.Tests
 {
-    public partial class ConfigurationBinderTests
+    public abstract class ConfigurationBinderTestsBase
     {
-        [ConditionalFact(typeof(TestHelpers), nameof(TestHelpers.NotSourceGenMode))] // Need support for records.
+        public ConfigurationBinderTestsBase()
+        {
+#if LAUNCH_DEBUGGER
+if (!System.Diagnostics.Debugger.IsAttached) { System.Diagnostics.Debugger.Launch(); }
+#endif
+        }
+    }
+
+    public partial class ConfigurationBinderTests : ConfigurationBinderTestsBase
+    {
+        [Fact]
         public void BindWithNestedTypesWithReadOnlyProperties()
         {
             IConfiguration configuration = new ConfigurationBuilder()
@@ -29,9 +44,19 @@ namespace Microsoft.Extensions
                 .Build();
 
             var result = configuration.Get<RootConfig>();
+            Assert.Equal("Dummy", result.Nested.MyProp);
 
+            result = (RootConfig)configuration.Get(typeof(RootConfig));
+            Assert.Equal("Dummy", result.Nested.MyProp);
+
+            result = result = configuration.Get<RootConfig>(options => { });
+            Assert.Equal("Dummy", result.Nested.MyProp);
+
+            result = (RootConfig)configuration.Get(typeof(RootConfig), options => { });
             Assert.Equal("Dummy", result.Nested.MyProp);
         }
+
+        // Add test for type with parameterless ctor + init-only properties.
 
         [Fact]
         public void EnumBindCaseInsensitiveNotThrows()
@@ -70,15 +95,31 @@ namespace Microsoft.Extensions
 
             var options = config.Get<ConfigurationInterfaceOptions>();
             var childOptions = options.Section.Get<DerivedOptions>();
+            Test();
 
-            Assert.True(childOptions.Boolean);
-            Assert.Equal(-2, childOptions.Integer);
-            Assert.Equal(11, childOptions.Nested.Integer);
-            Assert.Equal("Derived:Sup", childOptions.Virtual);
+            options = (ConfigurationInterfaceOptions)config.Get(typeof(ConfigurationInterfaceOptions));
+            childOptions = (DerivedOptions)options.Section.Get(typeof(DerivedOptions));
+            Test();
 
-            Assert.Equal("Section", options.Section.Key);
-            Assert.Equal("Section", options.Section.Path);
-            Assert.Null(options.Section.Value);
+            options = config.Get<ConfigurationInterfaceOptions>(options => { });
+            childOptions = options.Section.Get<DerivedOptions>(options => { });
+            Test();
+
+            options = (ConfigurationInterfaceOptions)config.Get(typeof(ConfigurationInterfaceOptions), options => { });
+            childOptions = (DerivedOptions)options.Section.Get(typeof(DerivedOptions), options => { });
+            Test();
+
+            void Test()
+            {
+                Assert.True(childOptions.Boolean);
+                Assert.Equal(-2, childOptions.Integer);
+                Assert.Equal(11, childOptions.Nested.Integer);
+                Assert.Equal("Derived:Sup", childOptions.Virtual);
+
+                Assert.Equal("Section", options.Section.Key);
+                Assert.Equal("Section", options.Section.Path);
+                Assert.Null(options.Section.Value);
+            }
         }
 
         [Fact]
@@ -167,12 +208,40 @@ namespace Microsoft.Extensions
             configurationBuilder.AddInMemoryCollection(dic);
             var config = configurationBuilder.Build();
 
+#if BUILDING_SOURCE_GENERATOR_TESTS
+            // Ensure exception messages are in sync
+            Assert.Throws<InvalidOperationException>(() => config.GetValue<bool?>("empty"));
+            Assert.Throws<InvalidOperationException>(() => config.GetValue<int?>("empty"));
+#else
             Assert.Null(config.GetValue<bool?>("empty"));
             Assert.Null(config.GetValue<int?>("empty"));
+#endif
         }
 
         [Fact]
-        public void GetScalarNullable()
+        public void Get_Scalar()
+        {
+            var dic = new Dictionary<string, string>
+            {
+                {"Integer", "-2"},
+                {"Boolean", "TRUe"},
+                {"Nested:Integer", "11"}
+            };
+            var configurationBuilder = new ConfigurationBuilder();
+            configurationBuilder.AddInMemoryCollection(dic);
+            var config = configurationBuilder.Build();
+
+            Assert.True(config.GetValue<bool>("Boolean"));
+            Assert.Equal(-2, config.GetValue<int>("Integer"));
+            Assert.Equal(11, config.GetValue<int>("Nested:Integer"));
+
+            Assert.True((bool)config.GetValue(typeof(bool), "Boolean"));
+            Assert.Equal(-2, (int)config.GetValue(typeof(int), "Integer"));
+            Assert.Equal(11, (int)config.GetValue(typeof(int), "Nested:Integer"));
+        }
+
+        [Fact]
+        public void Get_ScalarNullable()
         {
             var dic = new Dictionary<string, string>
             {
@@ -187,6 +256,54 @@ namespace Microsoft.Extensions
             Assert.True(config.GetValue<bool?>("Boolean"));
             Assert.Equal(-2, config.GetValue<int?>("Integer"));
             Assert.Equal(11, config.GetValue<int?>("Nested:Integer"));
+
+            Assert.True((bool)config.GetValue(typeof(bool?), "Boolean"));
+            Assert.Equal(-2, (int)config.GetValue(typeof(int?), "Integer"));
+            Assert.Equal(11, (int)config.GetValue(typeof(int?), "Nested:Integer"));
+        }
+
+        [Fact]
+        public void GetValue_Scalar()
+        {
+            var dic = new Dictionary<string, string>
+            {
+                {"Integer", "-2"},
+                {"Boolean", "TRUe"},
+                {"Nested:Integer", "11"}
+            };
+            var configurationBuilder = new ConfigurationBuilder();
+            configurationBuilder.AddInMemoryCollection(dic);
+            var config = configurationBuilder.Build();
+
+            Assert.True(config.GetSection("Boolean").Get<bool>());
+            Assert.Equal(-2, config.GetSection("Integer").Get<int>());
+            Assert.Equal(11, config.GetSection("Nested:Integer").Get<int>());
+
+            Assert.True((bool)config.GetSection("Boolean").Get(typeof(bool)));
+            Assert.Equal(-2, (int)config.GetSection("Integer").Get(typeof(int)));
+            Assert.Equal(11, (int)config.GetSection("Nested:Integer").Get(typeof(int)));
+        }
+
+        [Fact]
+        public void GetValue_ScalarNullable()
+        {
+            var dic = new Dictionary<string, string>
+            {
+                {"Integer", "-2"},
+                {"Boolean", "TRUe"},
+                {"Nested:Integer", "11"}
+            };
+            var configurationBuilder = new ConfigurationBuilder();
+            configurationBuilder.AddInMemoryCollection(dic);
+            var config = configurationBuilder.Build();
+
+            Assert.True(config.GetSection("Boolean").Get<bool?>());
+            Assert.Equal(-2, config.GetSection("Integer").Get<int?>());
+            Assert.Equal(11, config.GetSection("Nested:Integer").Get<int?>());
+
+            Assert.True(config.GetSection("Boolean").Get(typeof(bool?)) is true);
+            Assert.Equal(-2, (int)config.GetSection("Integer").Get(typeof(int?)));
+            Assert.Equal(11, (int)config.GetSection("Nested:Integer").Get(typeof(int?)));
         }
 
         [Fact]
@@ -209,29 +326,63 @@ namespace Microsoft.Extensions
         [Fact]
         public void GetNullValue()
         {
-            var dic = new Dictionary<string, string>
+            #nullable enable
+            #pragma warning disable IDE0004 // Cast is redundant
+
+            var dic = new Dictionary<string, string?>
             {
                 {"Integer", null},
                 {"Boolean", null},
                 {"Nested:Integer", null},
+                {"String", null},
                 {"Object", null }
             };
             var configurationBuilder = new ConfigurationBuilder();
             configurationBuilder.AddInMemoryCollection(dic);
             var config = configurationBuilder.Build();
 
+            // Generic overloads.
             Assert.False(config.GetValue<bool>("Boolean"));
             Assert.Equal(0, config.GetValue<int>("Integer"));
             Assert.Equal(0, config.GetValue<int>("Nested:Integer"));
+            Assert.Null(config.GetValue<string>("String"));
             Assert.Null(config.GetValue<ComplexOptions>("Object"));
+
+            // Generic overloads with default value.
+            Assert.True((bool)config.GetValue("Boolean", true));
+            Assert.Equal(1, (int)config.GetValue("Integer", 1));
+            Assert.Equal(1, (int)config.GetValue("Nested:Integer", 1));
+            // [NotNullIfNotNull] avoids CS8600: Converting possible null value to non-nullable type.
+            Assert.Equal("s", (string)config.GetValue("String", "s"));
+            Assert.Equal(new NestedConfig(""), (NestedConfig)config.GetValue("Object", new NestedConfig("")));
+
+            // Type overloads.
+            Assert.Null(config.GetValue(typeof(bool), "Boolean"));
+            Assert.Null(config.GetValue(typeof(int), "Integer"));
+            Assert.Null(config.GetValue(typeof(int), "Nested:Integer"));
+            Assert.Null(config.GetValue(typeof(ComplexOptions), "Object"));
+
+            // Type overloads with default value.
+            // [NotNullIfNotNull] avoids CS8605: Unboxing a possibly null value.
+            Assert.True((bool)config.GetValue(typeof(bool), "Boolean", true));
+            Assert.Equal(1, (int)config.GetValue(typeof(int), "Integer", 1));
+            Assert.Equal(1, (int)config.GetValue(typeof(int), "Nested:Integer", 1));
+            // [NotNullIfNotNull] avoids CS8600: Converting possible null value to non-nullable type.
+            Assert.Equal("s", (string)config.GetValue(typeof(string), "String", "s"));
+            Assert.Equal(new NestedConfig(""), (NestedConfig)config.GetValue("Object", new NestedConfig("")));
+
+            // GetSection tests.
             Assert.False(config.GetSection("Boolean").Get<bool>());
             Assert.Equal(0, config.GetSection("Integer").Get<int>());
             Assert.Equal(0, config.GetSection("Nested:Integer").Get<int>());
             Assert.Null(config.GetSection("Object").Get<ComplexOptions>());
+
+            #pragma warning restore IDE0004
+            #nullable restore
         }
 
-        [ConditionalFact(typeof(TestHelpers), nameof(TestHelpers.NotSourceGenMode))] // Need to honor binder options.
-        public void ThrowsIfPropertyInConfigMissingInModel()
+        [Fact]
+        public void ThrowsIfPropertyInConfigMissingInModel_Bind()
         {
             var dic = new Dictionary<string, string>
             {
@@ -255,8 +406,58 @@ namespace Microsoft.Extensions
             Assert.Equal(expectedMessage, ex.Message);
         }
 
-        [ConditionalFact(typeof(TestHelpers), nameof(TestHelpers.NotSourceGenMode))] // Need to honor binder options.
-        public void ThrowsIfPropertyInConfigMissingInNestedModel()
+        [Fact]
+        public void ThrowsIfPropertyInConfigMissingInNestedModel_Bind()
+        {
+            var dic = new Dictionary<string, string>
+            {
+                {"Nested:ThisDoesNotExistInTheModel", "42"},
+                {"Integer", "-2"},
+                {"Boolean", "TRUe"},
+                {"Nested:Integer", "11"}
+            };
+            var configurationBuilder = new ConfigurationBuilder();
+            configurationBuilder.AddInMemoryCollection(dic);
+            var config = configurationBuilder.Build();
+
+            var instance = new ComplexOptions();
+
+            string expectedMessage = SR.Format(SR.Error_MissingConfig,
+                nameof(BinderOptions.ErrorOnUnknownConfiguration), nameof(BinderOptions), typeof(NestedOptions), "'ThisDoesNotExistInTheModel'");
+
+            var ex = Assert.Throws<InvalidOperationException>(
+                () => config.Bind(instance, o => o.ErrorOnUnknownConfiguration = true));
+
+            Assert.Equal(expectedMessage, ex.Message);
+        }
+
+        [Fact]
+        public void ThrowsIfPropertyInConfigMissingInModel_Get()
+        {
+            var dic = new Dictionary<string, string>
+            {
+                {"ThisDoesNotExistInTheModel", "42"},
+                {"Integer", "-2"},
+                {"Boolean", "TRUe"},
+                {"Nested:Integer", "11"}
+            };
+            var configurationBuilder = new ConfigurationBuilder();
+            configurationBuilder.AddInMemoryCollection(dic);
+            var config = configurationBuilder.Build();
+
+            var instance = new ComplexOptions();
+
+            var ex = Assert.Throws<InvalidOperationException>(
+                () => config.Bind(instance, o => o.ErrorOnUnknownConfiguration = true));
+
+            string expectedMessage = SR.Format(SR.Error_MissingConfig,
+                nameof(BinderOptions.ErrorOnUnknownConfiguration), nameof(BinderOptions), typeof(ComplexOptions), "'ThisDoesNotExistInTheModel'");
+
+            Assert.Equal(expectedMessage, ex.Message);
+        }
+
+        [Fact]
+        public void ThrowsIfPropertyInConfigMissingInNestedModel_Get()
         {
             var dic = new Dictionary<string, string>
             {
@@ -317,7 +518,7 @@ namespace Microsoft.Extensions
             Assert.Equal("http://www.bing.com", uri.OriginalString);
         }
 
-        [Theory]
+        [ConditionalTheory(typeof(TestHelpers), nameof(TestHelpers.NotSourceGenMode))] // Reflection fallback: generic type info not supported with source gen.
         [InlineData("2147483647", typeof(int))]
         [InlineData("4294967295", typeof(uint))]
         [InlineData("32767", typeof(short))]
@@ -354,10 +555,12 @@ namespace Microsoft.Extensions
             var expectedValue = TypeDescriptor.GetConverter(type).ConvertFromInvariantString(value);
 
             // act
+#pragma warning disable SYSLIB1104
             config.Bind(options);
             var optionsValue = options.GetType().GetProperty("Value").GetValue(options);
             var getValueValue = config.GetValue(type, "Value");
             var getValue = config.GetSection("Value").Get(type);
+#pragma warning restore SYSLIB1104
 
             // assert
             Assert.Equal(expectedValue, optionsValue);
@@ -365,7 +568,7 @@ namespace Microsoft.Extensions
             Assert.Equal(expectedValue, getValueValue);
         }
 
-        [Theory]
+        [ConditionalTheory(typeof(TestHelpers), nameof(TestHelpers.NotSourceGenMode))] // Reflection fallback: generic type info not supported with source gen.
         [InlineData(typeof(int))]
         [InlineData(typeof(uint))]
         [InlineData(typeof(short))]
@@ -401,6 +604,7 @@ namespace Microsoft.Extensions
             var options = Activator.CreateInstance(optionsType);
 
             // act
+#pragma warning disable SYSLIB1104
             var exception = Assert.Throws<InvalidOperationException>(
                 () => config.Bind(options));
 
@@ -409,6 +613,7 @@ namespace Microsoft.Extensions
 
             var getException = Assert.Throws<InvalidOperationException>(
                 () => config.GetSection("Value").Get(type));
+#pragma warning restore SYSLIB1104
 
             // assert
             Assert.NotNull(exception.InnerException);
@@ -424,7 +629,7 @@ namespace Microsoft.Extensions
                 getValueException.Message);
         }
 
-        [ConditionalFact(typeof(TestHelpers), nameof(TestHelpers.NotSourceGenMode))] // Ensure exception messages are in sync
+        [Fact]
         public void ExceptionOnFailedBindingIncludesPath()
         {
             const string IncorrectValue = "Invalid data";
@@ -561,23 +766,6 @@ namespace Microsoft.Extensions
         }
 
         [Fact]
-        public void BindCanReadStaticProperty()
-        {
-            var dic = new Dictionary<string, string>
-            {
-                {"StaticProperty", "other stuff"},
-            };
-            var configurationBuilder = new ConfigurationBuilder();
-            configurationBuilder.AddInMemoryCollection(dic);
-            var config = configurationBuilder.Build();
-
-            var instance = new ComplexOptions();
-            config.Bind(instance);
-
-            Assert.Equal("other stuff", ComplexOptions.StaticProperty);
-        }
-
-        [Fact]
         public void CanGetComplexOptionsWhichHasAlsoHasValue()
         {
             var dic = new Dictionary<string, string>
@@ -622,28 +810,6 @@ namespace Microsoft.Extensions
         }
 
         [Theory]
-        [InlineData("PrivateSetter")]
-        [InlineData("ProtectedSetter")]
-        [InlineData("InternalSetter")]
-        [InlineData("InternalProperty")]
-        [InlineData("PrivateProperty")]
-        [InlineData("ProtectedProperty")]
-        [InlineData("ProtectedPrivateSet")]
-        public void GetCanSetNonPublicWhenSet(string property)
-        {
-            var dic = new Dictionary<string, string>
-            {
-                {property, "stuff"},
-            };
-            var configurationBuilder = new ConfigurationBuilder();
-            configurationBuilder.AddInMemoryCollection(dic);
-            var config = configurationBuilder.Build();
-
-            var options = config.Get<ComplexOptions>(o => o.BindNonPublicProperties = true);
-            Assert.Equal("stuff", options.GetType().GetTypeInfo().GetDeclaredProperty(property).GetValue(options));
-        }
-
-        [Theory]
         [InlineData("InternalReadOnly")]
         [InlineData("PrivateReadOnly")]
         [InlineData("ProtectedReadOnly")]
@@ -657,8 +823,13 @@ namespace Microsoft.Extensions
             configurationBuilder.AddInMemoryCollection(dic);
             var config = configurationBuilder.Build();
 
+#if BUILDING_SOURCE_GENERATOR_TESTS
+            var ex = Assert.Throws<NotSupportedException>(() => config.Get<ComplexOptions>(o => o.BindNonPublicProperties = true));
+            Assert.Contains("BinderOptions.BindNonPublicProperties", ex.ToString());
+#else
             var options = config.Get<ComplexOptions>(o => o.BindNonPublicProperties = true);
             Assert.Null(options.GetType().GetTypeInfo().GetDeclaredProperty(property).GetValue(options));
+#endif
         }
 
         [Theory]
@@ -705,8 +876,47 @@ namespace Microsoft.Extensions
             var config = configurationBuilder.Build();
 
             var options = new ComplexOptions();
+
+#if BUILDING_SOURCE_GENERATOR_TESTS
+            var ex = Assert.Throws<NotSupportedException>(() => config.Bind(options, o => o.BindNonPublicProperties = true));
+            Assert.Contains("BinderOptions.BindNonPublicProperties", ex.ToString());
+#else
             config.Bind(options, o => o.BindNonPublicProperties = true);
             Assert.Equal("stuff", options.GetType().GetTypeInfo().GetDeclaredProperty(property).GetValue(options));
+#endif
+        }
+
+        [Theory]
+        [InlineData("PrivateSetter")]
+        [InlineData("ProtectedSetter")]
+        [InlineData("InternalSetter")]
+        [InlineData("InternalProperty")]
+        [InlineData("PrivateProperty")]
+        [InlineData("ProtectedProperty")]
+        [InlineData("ProtectedPrivateSet")]
+        public void GetCanSetNonPublicWhenSet(string property)
+        {
+            var dic = new Dictionary<string, string>
+            {
+                {property, "stuff"},
+            };
+            var configurationBuilder = new ConfigurationBuilder();
+            configurationBuilder.AddInMemoryCollection(dic);
+            var config = configurationBuilder.Build();
+
+#if BUILDING_SOURCE_GENERATOR_TESTS
+            var ex = Assert.Throws<NotSupportedException>(() => config.Get<ComplexOptions>(o => o.BindNonPublicProperties = true));
+            Assert.Contains("BinderOptions.BindNonPublicProperties", ex.ToString());
+
+            ex = Assert.Throws<NotSupportedException>(() => config.Get(typeof(ComplexOptions), o => o.BindNonPublicProperties = true));
+            Assert.Contains("BinderOptions.BindNonPublicProperties", ex.ToString());
+#else
+            var options = config.Get<ComplexOptions>(o => o.BindNonPublicProperties = true);
+            Assert.Equal("stuff", options.GetType().GetTypeInfo().GetDeclaredProperty(property).GetValue(options));
+
+            options = (ComplexOptions)config.Get(typeof(ComplexOptions), o => o.BindNonPublicProperties = true);
+            Assert.Equal("stuff", options.GetType().GetTypeInfo().GetDeclaredProperty(property).GetValue(options));
+#endif
         }
 
         [Theory]
@@ -724,8 +934,12 @@ namespace Microsoft.Extensions
             var config = configurationBuilder.Build();
 
             var options = new ComplexOptions();
+#if BUILDING_SOURCE_GENERATOR_TESTS
+            Assert.Throws<NotSupportedException>(() => config.Bind(options, o => o.BindNonPublicProperties = true));
+#else
             config.Bind(options, o => o.BindNonPublicProperties = true);
             Assert.Null(options.GetType().GetTypeInfo().GetDeclaredProperty(property).GetValue(options));
+#endif
         }
 
         [ConditionalFact(typeof(TestHelpers), nameof(TestHelpers.NotSourceGenMode))] // Ensure exception messages are in sync
@@ -740,14 +954,13 @@ namespace Microsoft.Extensions
             configurationBuilder.AddInMemoryCollection(input);
             var config = configurationBuilder.Build();
 
-            var exception = Assert.Throws<InvalidOperationException>(
-                () => config.Bind(new TestOptions()));
+            var exception = Assert.Throws<InvalidOperationException>(() => config.Bind(new TestOptions()));
             Assert.Equal(
                 SR.Format(SR.Error_CannotActivateAbstractOrInterface, typeof(ISomeInterface)),
                 exception.Message);
         }
 
-        [ConditionalFact(typeof(TestHelpers), nameof(TestHelpers.NotSourceGenMode))] // Ensure exception messages are in sync
+        [Fact]
         public void ExceptionWhenTryingToBindClassWithoutParameterlessConstructor()
         {
             var input = new Dictionary<string, string>
@@ -766,8 +979,8 @@ namespace Microsoft.Extensions
                 exception.Message);
         }
 
-        [ConditionalFact(typeof(TestHelpers), nameof(TestHelpers.NotSourceGenMode))] // Need support for parameterized ctors.
-        public void ExceptionWhenTryingToBindClassWherePropertiesDoMatchConstructorParameters()
+        [Fact]
+        public void ExceptionWhenTryingToBindClassWherePropertiesDoNotMatchConstructorParameters()
         {
             var input = new Dictionary<string, string>
             {
@@ -787,8 +1000,8 @@ namespace Microsoft.Extensions
                 exception.Message);
         }
 
-        [ConditionalFact(typeof(TestHelpers), nameof(TestHelpers.NotSourceGenMode))]
-        public void ExceptionWhenTryingToBindToConstructorWithMissingConfig() // Need support for parameterized ctors.
+        [Fact]
+        public void ExceptionWhenTryingToBindToConstructorWithMissingConfig()
         {
             var input = new Dictionary<string, string>
             {
@@ -807,8 +1020,8 @@ namespace Microsoft.Extensions
                 exception.Message);
         }
 
-        [ConditionalFact(typeof(TestHelpers), nameof(TestHelpers.NotSourceGenMode))]
-        public void ExceptionWhenTryingToBindConfigToClassWhereNoMatchingParameterIsFoundInConstructor() // Need support for parameterized ctors.
+        [Fact]
+        public void ExceptionWhenTryingToBindConfigToClassWhereNoMatchingParameterIsFoundInConstructor()
         {
             var input = new Dictionary<string, string>
             {
@@ -828,8 +1041,8 @@ namespace Microsoft.Extensions
                 exception.Message);
         }
 
-        [ConditionalFact(typeof(TestHelpers), nameof(TestHelpers.NotSourceGenMode))]
-        public void BindsToClassConstructorParametersWithDefaultValues() // Need support for parameterized ctors.
+        [Fact]
+        public void BindsToClassConstructorParametersWithDefaultValues()
         {
             var input = new Dictionary<string, string>
             {
@@ -847,9 +1060,20 @@ namespace Microsoft.Extensions
             Assert.Equal("John", testOptions.ClassWhereParametersHaveDefaultValueProperty.Name);
             Assert.Equal("123, Abc St.", testOptions.ClassWhereParametersHaveDefaultValueProperty.Address);
             Assert.Equal(42, testOptions.ClassWhereParametersHaveDefaultValueProperty.Age);
+            Assert.Equal(42.0f, testOptions.ClassWhereParametersHaveDefaultValueProperty.F);
+            Assert.Equal(3.14159, testOptions.ClassWhereParametersHaveDefaultValueProperty.D);
+            Assert.Equal(3.1415926535897932384626433M, testOptions.ClassWhereParametersHaveDefaultValueProperty.M);
+            Assert.Equal(StringComparison.Ordinal, testOptions.ClassWhereParametersHaveDefaultValueProperty.SC);
+            Assert.Equal('q', testOptions.ClassWhereParametersHaveDefaultValueProperty.C);
+            Assert.Equal(42, testOptions.ClassWhereParametersHaveDefaultValueProperty.NAge);
+            Assert.Equal(42.0f, testOptions.ClassWhereParametersHaveDefaultValueProperty.NF);
+            Assert.Equal(3.14159, testOptions.ClassWhereParametersHaveDefaultValueProperty.ND);
+            Assert.Equal(3.1415926535897932384626433M, testOptions.ClassWhereParametersHaveDefaultValueProperty.NM);
+            Assert.Equal(StringComparison.Ordinal, testOptions.ClassWhereParametersHaveDefaultValueProperty.NSC);
+            Assert.Equal('q', testOptions.ClassWhereParametersHaveDefaultValueProperty.NC);
         }
 
-        [ConditionalFact(typeof(TestHelpers), nameof(TestHelpers.NotSourceGenMode))] // Need support for parameterized ctors.
+        [Fact]
         public void FieldsNotSupported_ExceptionBindingToConstructorWithParameterMatchingAField()
         {
             var input = new Dictionary<string, string>
@@ -871,7 +1095,7 @@ namespace Microsoft.Extensions
                 exception.Message);
         }
 
-        [ConditionalFact(typeof(TestHelpers), nameof(TestHelpers.NotSourceGenMode))] // Need support for parameterized ctors.
+        [Fact]
         public void BindsToRecordPrimaryConstructorParametersWithDefaultValues()
         {
             var input = new Dictionary<string, string>
@@ -947,7 +1171,7 @@ namespace Microsoft.Extensions
             Assert.Equal("hello world", options.MyString);
         }
 
-        [ConditionalFact(typeof(TestHelpers), nameof(TestHelpers.NotSourceGenMode))] // Need support for parameterized ctors.
+        [Fact]
         public void CanBindImmutableClass()
         {
             var dic = new Dictionary<string, string>
@@ -964,7 +1188,7 @@ namespace Microsoft.Extensions
             Assert.Equal("Green", options.Color);
         }
 
-        [ConditionalFact(typeof(TestHelpers), nameof(TestHelpers.NotSourceGenMode))] // Need support for parameterized ctors.
+        [Fact]
         public void CanBindMutableClassWitNestedImmutableObject()
         {
             var dic = new Dictionary<string, string>
@@ -985,7 +1209,7 @@ namespace Microsoft.Extensions
 
         // If the immutable type has multiple public parameterized constructors, then throw
         // an exception.
-        [ConditionalFact(typeof(TestHelpers), nameof(TestHelpers.NotSourceGenMode))] // Need support for parameterized ctors.
+        [Fact]
         public void CanBindImmutableClass_ThrowsOnMultipleParameterizedConstructors()
         {
             var dic = new Dictionary<string, string>
@@ -999,7 +1223,7 @@ namespace Microsoft.Extensions
             configurationBuilder.AddInMemoryCollection(dic);
             var config = configurationBuilder.Build();
 
-            string expectedMessage = SR.Format(SR.Error_MultipleParameterizedConstructors, "Microsoft.Extensions.Configuration.Binder.Tests.ConfigurationBinderTests+ImmutableClassWithMultipleParameterizedConstructors");
+            string expectedMessage = SR.Format(SR.Error_MultipleParameterizedConstructors, typeof(ImmutableClassWithMultipleParameterizedConstructors));
 
             var ex = Assert.Throws<InvalidOperationException>(() => config.Get<ImmutableClassWithMultipleParameterizedConstructors>());
 
@@ -1008,7 +1232,7 @@ namespace Microsoft.Extensions
 
         // If the immutable type has a parameterized constructor, then throw
         // that constructor has an 'in' parameter
-        [ConditionalFact(typeof(TestHelpers), nameof(TestHelpers.NotSourceGenMode))] // Need support for parameterized ctors.
+        [Fact]
         public void CanBindImmutableClass_ThrowsOnParameterizedConstructorWithAnInParameter()
         {
             var dic = new Dictionary<string, string>
@@ -1022,7 +1246,7 @@ namespace Microsoft.Extensions
             configurationBuilder.AddInMemoryCollection(dic);
             var config = configurationBuilder.Build();
 
-            string expectedMessage = SR.Format(SR.Error_CannotBindToConstructorParameter, "Microsoft.Extensions.Configuration.Binder.Tests.ConfigurationBinderTests+ImmutableClassWithOneParameterizedConstructorButWithInParameter", "string1");
+            string expectedMessage = SR.Format(SR.Error_CannotBindToConstructorParameter, typeof(ImmutableClassWithOneParameterizedConstructorButWithInParameter), "string1");
 
             var ex = Assert.Throws<InvalidOperationException>(() => config.Get<ImmutableClassWithOneParameterizedConstructorButWithInParameter>());
 
@@ -1031,7 +1255,7 @@ namespace Microsoft.Extensions
 
         // If the immutable type has a parameterized constructors, then throw
         // that constructor has a 'ref' parameter
-        [ConditionalFact(typeof(TestHelpers), nameof(TestHelpers.NotSourceGenMode))] // Need support for parameterized ctors.
+        [Fact]
         public void CanBindImmutableClass_ThrowsOnParameterizedConstructorWithARefParameter()
         {
             var dic = new Dictionary<string, string>
@@ -1045,7 +1269,7 @@ namespace Microsoft.Extensions
             configurationBuilder.AddInMemoryCollection(dic);
             var config = configurationBuilder.Build();
 
-            string expectedMessage = SR.Format(SR.Error_CannotBindToConstructorParameter, "Microsoft.Extensions.Configuration.Binder.Tests.ConfigurationBinderTests+ImmutableClassWithOneParameterizedConstructorButWithRefParameter", "int1");
+            string expectedMessage = SR.Format(SR.Error_CannotBindToConstructorParameter, typeof(ImmutableClassWithOneParameterizedConstructorButWithRefParameter), "int1");
 
             var ex = Assert.Throws<InvalidOperationException>(() => config.Get<ImmutableClassWithOneParameterizedConstructorButWithRefParameter>());
 
@@ -1054,7 +1278,7 @@ namespace Microsoft.Extensions
 
         // If the immutable type has a parameterized constructors, then throw
         // if the constructor has an 'out' parameter
-        [ConditionalFact(typeof(TestHelpers), nameof(TestHelpers.NotSourceGenMode))] // Need support for parameterized ctors.
+        [Fact]
         public void CanBindImmutableClass_ThrowsOnParameterizedConstructorWithAnOutParameter()
         {
             var dic = new Dictionary<string, string>
@@ -1068,14 +1292,14 @@ namespace Microsoft.Extensions
             configurationBuilder.AddInMemoryCollection(dic);
             var config = configurationBuilder.Build();
 
-            string expectedMessage = SR.Format(SR.Error_CannotBindToConstructorParameter, "Microsoft.Extensions.Configuration.Binder.Tests.ConfigurationBinderTests+ImmutableClassWithOneParameterizedConstructorButWithOutParameter", "int2");
+            string expectedMessage = SR.Format(SR.Error_CannotBindToConstructorParameter, typeof(ImmutableClassWithOneParameterizedConstructorButWithOutParameter), "int2");
 
             var ex = Assert.Throws<InvalidOperationException>(() => config.Get<ImmutableClassWithOneParameterizedConstructorButWithOutParameter>());
 
             Assert.Equal(expectedMessage, ex.Message);
         }
 
-        [ConditionalFact(typeof(TestHelpers), nameof(TestHelpers.NotSourceGenMode))] // Need support for parameterized ctors.
+        [Fact]
         public void CanBindMutableStruct_UnmatchedConstructorsAreIgnored()
         {
             var dic = new Dictionary<string, string>
@@ -1094,7 +1318,7 @@ namespace Microsoft.Extensions
 
         // If the immutable type has a public parameterized constructor,
         // then pick it.
-        [ConditionalFact(typeof(TestHelpers), nameof(TestHelpers.NotSourceGenMode))] // Need support for parameterized ctors.
+        [Fact]
         public void CanBindImmutableClass_PicksParameterizedConstructorIfNoParameterlessConstructorExists()
         {
             var dic = new Dictionary<string, string>
@@ -1115,7 +1339,7 @@ namespace Microsoft.Extensions
             Assert.Equal(2, options.Int2);
         }
 
-        [ConditionalFact(typeof(TestHelpers), nameof(TestHelpers.NotSourceGenMode))] // Need support for parameterized ctors.
+        [Fact]
         public void CanBindSemiImmutableClass()
         {
             var dic = new Dictionary<string, string>
@@ -1134,7 +1358,7 @@ namespace Microsoft.Extensions
             Assert.Equal(1.23m, options.Thickness);
         }
 
-        [ConditionalFact(typeof(TestHelpers), nameof(TestHelpers.NotSourceGenMode))] // Need support for parameterized ctors.
+        [Fact]
         public void CanBindSemiImmutableClass_WithInitProperties()
         {
             var dic = new Dictionary<string, string>
@@ -1153,7 +1377,7 @@ namespace Microsoft.Extensions
             Assert.Equal(1.23m, options.Thickness);
         }
 
-        [ConditionalFact(typeof(TestHelpers), nameof(TestHelpers.NotSourceGenMode))] // Need support for parameterized ctors.
+        [Fact]
         public void CanBindRecordOptions()
         {
             var dic = new Dictionary<string, string>
@@ -1170,8 +1394,8 @@ namespace Microsoft.Extensions
             Assert.Equal("Green", options.Color);
         }
 
-        [ConditionalFact(typeof(TestHelpers), nameof(TestHelpers.NotSourceGenMode))] // Need support for parameterized ctors.
-        public void CanBindRecordStructOptions()
+        [Fact]
+        public void CanBindClassWithPrimaryCtor()
         {
             var dic = new Dictionary<string, string>
             {
@@ -1182,12 +1406,64 @@ namespace Microsoft.Extensions
             configurationBuilder.AddInMemoryCollection(dic);
             var config = configurationBuilder.Build();
 
-            var options = config.Get<RecordStructTypeOptions>();
+            var options = config.Get<ClassWithPrimaryCtor>();
             Assert.Equal(42, options.Length);
             Assert.Equal("Green", options.Color);
         }
 
-        [ConditionalFact(typeof(TestHelpers), nameof(TestHelpers.NotSourceGenMode))] // Need support for parameterized ctors.
+        [Fact]
+        public void CanBindClassWithPrimaryCtorWithDefaultValues()
+        {
+            var dic = new Dictionary<string, string>
+            {
+                {"Length", "-1"}
+            };
+            var configurationBuilder = new ConfigurationBuilder();
+            configurationBuilder.AddInMemoryCollection(dic);
+            var config = configurationBuilder.Build();
+
+            var options = config.Get<ClassWithPrimaryCtorDefaultValues>();
+            Assert.Equal(-1, options.Length);
+            Assert.Equal("blue", options.Color);
+            Assert.Equal(5.946238490567943927384M, options.Height);
+            Assert.Equal(EditorBrowsableState.Never, options.EB);
+        }
+
+        [Fact]
+        public void CanBindRecordStructOptions()
+        {
+            IConfiguration config = GetConfiguration("Length", "Color");
+            Validate(config.Get<RecordStructTypeOptions>());
+            Validate(config.Get<RecordStructTypeOptions?>().Value);
+
+            config = GetConfiguration("Options.Length", "Options.Color");
+            // GetValue works for only primitives.
+            //Reflection impl handles them by honoring `TypeConverter` only.
+            // Source-gen supports based on an allow-list.
+            Assert.Equal(default(RecordStructTypeOptions), config.GetValue<RecordStructTypeOptions>("Options"));
+            Assert.False(config.GetValue<RecordStructTypeOptions?>("Options").HasValue);
+
+            static void Validate(RecordStructTypeOptions options)
+            {
+                Assert.Equal(42, options.Length);
+                Assert.Equal("Green", options.Color);
+            }
+
+            static IConfiguration GetConfiguration(string key1, string key2)
+            {
+                var dic = new Dictionary<string, string>
+                {
+                    { key1, "42" },
+                    { key2, "Green" },
+                };
+
+                var configurationBuilder = new ConfigurationBuilder();
+                configurationBuilder.AddInMemoryCollection(dic);
+                return configurationBuilder.Build();
+            }
+        }
+
+        [Fact]
         public void CanBindNestedRecordOptions()
         {
             var dic = new Dictionary<string, string>
@@ -1210,7 +1486,7 @@ namespace Microsoft.Extensions
             Assert.Equal(24, options.Nested2.ValueB);
         }
 
-        [ConditionalFact(typeof(TestHelpers), nameof(TestHelpers.NotSourceGenMode))] // Need support for parameterized ctors.
+        [Fact]
         public void CanBindOnParametersAndProperties_PropertiesAreSetAfterTheConstructor()
         {
             var dic = new Dictionary<string, string>
@@ -1227,7 +1503,7 @@ namespace Microsoft.Extensions
             Assert.Equal("the color is Green", options.Color);
         }
 
-        [ConditionalFact(typeof(TestHelpers), nameof(TestHelpers.NotSourceGenMode))] // Need support for parameterized ctors.
+        [Fact]
         public void CanBindReadonlyRecordStructOptions()
         {
             var dic = new Dictionary<string, string>
@@ -1274,7 +1550,7 @@ namespace Microsoft.Extensions
             Assert.Null(options.MyByteArray);
         }
 
-        [ConditionalFact(typeof(TestHelpers), nameof(TestHelpers.NotSourceGenMode))] // Ensure exception messages are in sync
+        [Fact]
         public void ExceptionWhenTryingToBindToByteArray()
         {
             var dic = new Dictionary<string, string>
@@ -1331,6 +1607,53 @@ namespace Microsoft.Extensions
         }
 
         [Fact]
+        public void CanBindNestedStructProperties_SetterCalledWithMissingConfigEntry()
+        {
+            ConfigurationBuilder configurationBuilder = new();
+            configurationBuilder.AddInMemoryCollection(new Dictionary<string, string>
+            {
+                { "dmy", "dmy" },
+            });
+
+            IConfiguration config = configurationBuilder.Build();
+
+            var bound = config.Get<StructWithNestedStructAndSetterLogic>();
+            Assert.Null(bound.String);
+            Assert.Null(bound.NestedStruct.String);
+            Assert.Equal(42, bound.Int32);
+            Assert.Equal(0, bound.NestedStruct.Int32);
+        }
+
+        [Fact]
+        public void CanBindNestedStructProperties_SetterNotCalledWithMissingConfigSection()
+        {
+            ConfigurationBuilder configurationBuilder = new();
+            configurationBuilder.AddInMemoryCollection(new Dictionary<string, string>
+            {
+                // An empty value will not trigger defaulting.
+            });
+
+            IConfiguration config = configurationBuilder.Build();
+
+            var bound = config.Get<StructWithNestedStructAndSetterLogic>();
+            Assert.Null(bound.String);
+            Assert.Null(bound.NestedStruct.String);
+            Assert.Equal(0, bound.Int32);
+            Assert.Equal(0, bound.NestedStruct.Int32);
+        }
+
+        [Fact]
+        public void CanBindNestedStructProperties_SetterCalledWithMissingConfig_Array()
+        {
+            var config = TestHelpers.GetConfigurationFromJsonString(
+                """{"value": [{ }]}""");
+
+            var bound = config.GetSection("value").Get<StructWithNestedStructAndSetterLogic[]>();
+            Assert.Null(bound[0].String);
+            Assert.Equal(0, bound[0].Int32);
+        }
+
+        [Fact]
         public void IgnoresReadOnlyNestedStructProperties()
         {
             ConfigurationBuilder configurationBuilder = new();
@@ -1366,7 +1689,7 @@ namespace Microsoft.Extensions
             Assert.True(bound.NullableNestedStruct.Value.DeeplyNested.Boolean);
         }
 
-        [ConditionalFact(typeof(TestHelpers), nameof(TestHelpers.NotSourceGenMode))] // Need collection support.
+        [ConditionalFact(typeof(TestHelpers), nameof(TestHelpers.NotSourceGenMode))] // Need property selection in sync with reflection.
         public void CanBindVirtualProperties()
         {
             ConfigurationBuilder configurationBuilder = new();
@@ -1392,8 +1715,8 @@ namespace Microsoft.Extensions
             Assert.Null(test.ExposeTestVirtualSet());
         }
 
-        [ConditionalFact(typeof(TestHelpers), nameof(TestHelpers.NotSourceGenMode))] // Need to honor binder options.
-        public void CanBindPrivatePropertiesFromBaseClass()
+        [Fact]
+        public void PrivatePropertiesFromBaseClass_Bind()
         {
             ConfigurationBuilder configurationBuilder = new();
             configurationBuilder.AddInMemoryCollection(new Dictionary<string, string>
@@ -1403,11 +1726,42 @@ namespace Microsoft.Extensions
             IConfiguration config = configurationBuilder.Build();
 
             var test = new ClassOverridingVirtualProperty();
+
+#if BUILDING_SOURCE_GENERATOR_TESTS
+            var ex = Assert.Throws<NotSupportedException>(() => config.Bind(test, b => b.BindNonPublicProperties = true));
+            Assert.Contains("BinderOptions.BindNonPublicProperties", ex.ToString());
+#else
             config.Bind(test, b => b.BindNonPublicProperties = true);
             Assert.Equal("a", test.ExposePrivatePropertyValue());
+#endif
         }
 
-        [ConditionalFact(typeof(TestHelpers), nameof(TestHelpers.NotSourceGenMode))] // Need collection support.
+        [Fact]
+        public void PrivatePropertiesFromBaseClass_Get()
+        {
+            ConfigurationBuilder configurationBuilder = new();
+            configurationBuilder.AddInMemoryCollection(new Dictionary<string, string>
+            {
+                { "PrivateProperty", "a" }
+            });
+            IConfiguration config = configurationBuilder.Build();
+
+#if BUILDING_SOURCE_GENERATOR_TESTS
+            var ex = Assert.Throws<NotSupportedException>(() => config.Get<ClassOverridingVirtualProperty>(b => b.BindNonPublicProperties = true));
+            Assert.Contains("BinderOptions.BindNonPublicProperties", ex.ToString());
+
+            ex = Assert.Throws<NotSupportedException>(() => config.Get(typeof(ClassOverridingVirtualProperty), b => b.BindNonPublicProperties = true));
+            Assert.Contains("BinderOptions.BindNonPublicProperties", ex.ToString());
+#else
+            var test = config.Get<ClassOverridingVirtualProperty>(b => b.BindNonPublicProperties = true);
+            Assert.Equal("a", test.ExposePrivatePropertyValue());
+
+            test = (ClassOverridingVirtualProperty)config.Get(typeof(ClassOverridingVirtualProperty), b => b.BindNonPublicProperties = true);
+            Assert.Equal("a", test.ExposePrivatePropertyValue());
+#endif
+        }
+
+        [Fact]
         public void EnsureCallingThePropertySetter()
         {
             var json = @"{
@@ -1431,7 +1785,74 @@ namespace Microsoft.Extensions
             Assert.Equal(2, options.ParsedBlacklist.Count); // should be initialized when calling the options.Blacklist setter.
 
             Assert.Equal(401, options.HttpStatusCode); // exists in configuration and properly sets the property
-            Assert.Equal(2, options.OtherCode); // doesn't exist in configuration. the setter sets default value '2'
+
+            // This doesn't exist in configuration but the setter should be called which defaults the to '2' from input of '0'.
+            Assert.Equal(2, options.OtherCode);
+
+            // These don't exist in configuration and setters are not called since they are nullable.
+            Assert.Equal(0, options.OtherCodeNullable);
+            Assert.Equal("default", options.OtherCodeString);
+            Assert.Null(options.OtherCodeNull);
+            Assert.Null(options.OtherCodeUri);
+        }
+
+        [Fact]
+        public void EnsureNotCallingSettersWhenGivenExistingInstanceNotInConfig()
+        {
+            var builder = new ConfigurationBuilder();
+            builder.AddInMemoryCollection(new KeyValuePair<string, string?>[] { });
+            var config = builder.Build();
+
+            ClassThatThrowsOnSetters instance = new();
+
+            // The setter for MyIntProperty throws, so this verifies that the setter is not called.
+            config.GetSection("Dmy").Bind(instance);
+            Assert.Equal(42, instance.MyIntProperty);
+        }
+
+        [Fact]
+        public void EnsureSuccessfullyBind()
+        {
+            var json = @"{
+                ""queueConfig"": {
+                    ""Namespaces"": [
+                        {
+                            ""Namespace"": ""devnortheurope"",
+                            ""Queues"": {
+                                ""q1"": {
+                                    ""DequeueOnlyMarkedDate"": ""2022-01-20T12:49:03.395150-08:00""
+                                },
+                                ""q2"": {
+                                    ""DequeueOnlyMarkedDate"": ""2022-01-20T12:49:03.395150-08:00""
+                                }
+                            }
+                        },
+                        {
+                            ""Namespace"": ""devnortheurope2"",
+                            ""Queues"": {
+                                ""q3"": {
+                                    ""DequeueOnlyMarkedDate"": ""2022-01-20T12:49:03.395150-08:00""
+                                },
+                                ""q4"": {
+                                }
+                            }
+                        }
+                    ]
+                }
+            }";
+
+            var configuration = new ConfigurationBuilder()
+                .AddJsonStream(TestStreamHelpers.StringToStream(json))
+                .Build();
+
+            DistributedQueueConfig options = new DistributedQueueConfig();
+            configuration.GetSection("queueConfig").Bind(options);
+
+            Assert.NotNull(options);
+            Assert.Equal(2, options.Namespaces.Count);
+            Assert.Equal(2, options.Namespaces.First().Queues.Count);
+            Assert.Equal(2, options.Namespaces.Skip(1).First().Queues.Count);
+            Assert.NotNull(options.Namespaces.Skip(1).First().Queues.Last().Value);
         }
 
         [Fact]
@@ -1463,12 +1884,6 @@ namespace Microsoft.Extensions
             Assert.Null(deeplyNested.MyClass);
         }
 
-        public class ClassWithDirectSelfReference
-        {
-            public string MyString { get; set; }
-            public ClassWithDirectSelfReference MyClass { get; set; }
-        }
-
         [Fact]
         public void RecursiveTypeGraphs_IndirectRef()
         {
@@ -1498,10 +1913,638 @@ namespace Microsoft.Extensions
             Assert.Null(deeplyNested.MyList);
         }
 
-        public class ClassWithIndirectSelfReference
+        [Fact]
+        public void TypeWithPrimitives_Pass()
         {
-            public string MyString { get; set; }
-            public List<ClassWithIndirectSelfReference> MyList { get; set; }
+            var data = @"{
+                ""Prop0"": true,
+                ""Prop1"": 1,
+                ""Prop2"": 2,
+                ""Prop3"": ""C"",
+                ""Prop4"": 3.2,
+                ""Prop5"": ""Hello, world!"",
+                ""Prop6"": 4,
+                ""Prop8"": 9,
+                ""Prop9"": 7,
+                ""Prop10"": 2.3,
+                ""Prop13"": 5,
+                ""Prop14"": 10,
+                ""Prop15"": 11,
+                ""Prop16"": ""obj always parsed as string"",
+                ""Prop17"": ""yo-NG"",
+                ""Prop19"": ""2023-03-29T18:23:43.9977489+00:00"",
+                ""Prop20"": ""2023-03-29T18:21:22.8046981+00:00"",
+                ""Prop21"": 5.3,
+                ""Prop23"": ""10675199.02:48:05.4775807"",
+                ""Prop24"": ""e905a75b-d195-494d-8938-e55dcee44574"",
+                ""Prop25"": ""https://microsoft.com"",
+                ""Prop26"": ""4.3.2.1"",
+            }";
+
+            var configuration = TestHelpers.GetConfigurationFromJsonString(data);
+            var obj = configuration.Get<RecordWithPrimitives>();
+
+            Assert.True(obj.Prop0);
+            Assert.Equal(1, obj.Prop1);
+            Assert.Equal(2, obj.Prop2);
+            Assert.Equal('C', obj.Prop3);
+            Assert.Equal(3.2, obj.Prop4);
+            Assert.Equal("Hello, world!", obj.Prop5);
+            Assert.Equal(4, obj.Prop6);
+            Assert.Equal(9, obj.Prop8);
+            Assert.Equal(7, obj.Prop9);
+            Assert.Equal((float)2.3, obj.Prop10);
+            Assert.Equal(5, obj.Prop13);
+            Assert.Equal((uint)10, obj.Prop14);
+            Assert.Equal((ulong)11, obj.Prop15);
+            Assert.Equal("obj always parsed as string", obj.Prop16);
+            Assert.Equal(CultureInfo.GetCultureInfoByIetfLanguageTag("yo-NG"), obj.Prop17);
+            Assert.Equal(DateTime.Parse("2023-03-29T18:23:43.9977489+00:00", CultureInfo.InvariantCulture), obj.Prop19);
+            Assert.Equal(DateTimeOffset.Parse("2023-03-29T18:21:22.8046981+00:00", CultureInfo.InvariantCulture), obj.Prop20);
+            Assert.Equal((decimal)5.3, obj.Prop21);
+            Assert.Equal(TimeSpan.Parse("10675199.02:48:05.4775807", CultureInfo.InvariantCulture), obj.Prop23);
+            Assert.Equal(Guid.Parse("e905a75b-d195-494d-8938-e55dcee44574"), obj.Prop24);
+            Uri.TryCreate("https://microsoft.com", UriKind.RelativeOrAbsolute, out Uri? value);
+            Assert.Equal(value, obj.Prop25);
+#if BUILDING_SOURCE_GENERATOR_TESTS
+            Assert.Equal(Version.Parse("4.3.2.1"), obj.Prop26);
+#endif
+            Assert.Equal(CultureInfo.GetCultureInfo("yo-NG"), obj.Prop17);
+
+#if NET
+            data = @"{
+                ""Prop7"": 9,
+                ""Prop11"": 65500,
+                ""Prop12"": 34,
+                ""Prop18"": ""2002-03-22"",
+                ""Prop22"": ""18:26:38.7327436"",
+            }";
+
+            configuration = TestHelpers.GetConfigurationFromJsonString(data);
+            configuration.Bind(obj);
+
+            Assert.Equal((Int128)9, obj.Prop7);
+            Assert.Equal((Half)65500, obj.Prop11);
+            Assert.Equal((UInt128)34, obj.Prop12);
+            Assert.Equal(DateOnly.Parse("2002-03-22"), obj.Prop18);
+            Assert.Equal(TimeOnly.Parse("18:26:38.7327436"), obj.Prop22);
+#endif
+        }
+
+        [Fact]
+        public void ForClasses_ParameterlessConstructorIsPickedOverParameterized()
+        {
+            string data = """
+                {
+                    "MyInt": 9,
+                }
+                """;
+
+            var configuration = TestHelpers.GetConfigurationFromJsonString(data);
+            var obj = configuration.Get<ClassWithParameterlessAndParameterizedCtor>();
+            Assert.Equal(1, obj.MyInt);
+        }
+
+        [Fact]
+        public void ForStructs_ParameterlessConstructorIsPickedOverParameterized()
+        {
+            string data = """
+                {
+                    "MyInt": 10,
+                }
+                """;
+
+            var configuration = TestHelpers.GetConfigurationFromJsonString(data);
+            var obj = configuration.Get<ClassWithParameterlessAndParameterizedCtor>();
+            Assert.Equal(1, obj.MyInt);
+        }
+
+        [Fact]
+        public void BindRootStructIsNoOp()
+        {
+            var configuration = TestHelpers.GetConfigurationFromJsonString("""
+                {
+                    "Int32": 9,
+                    "Boolean": true,
+                }
+                """);
+
+#pragma warning disable SYSLIB1103
+            StructWithNestedStructs.DeeplyNested obj = new();
+            configuration.Bind(obj);
+            Assert.Equal(0, obj.Int32);
+            Assert.False(obj.Boolean);
+
+            StructWithNestedStructs.DeeplyNested? nullableObj = new();
+            configuration.Bind(nullableObj);
+            Assert.Equal(0, obj.Int32);
+            Assert.False(obj.Boolean);
+#pragma warning restore SYSLIB1103
+        }
+
+        [Fact]
+        public void AllowsCaseInsensitiveMatch()
+        {
+            var configuration = TestHelpers.GetConfigurationFromJsonString("""
+                {
+                    "vaLue": "MyString",
+                }
+                """);
+
+            GenericOptions<string> obj = new();
+            configuration.Bind(obj);
+            Assert.Equal("MyString", obj.Value);
+
+            GenericOptionsRecord<string> obj1 = configuration.Get<GenericOptionsRecord<string>>();
+            Assert.Equal("MyString", obj1.Value);
+
+            GenericOptionsWithParamCtor<string> obj2 = configuration.Get<GenericOptionsWithParamCtor<string>>();
+            Assert.Equal("MyString", obj2.Value);
+        }
+
+        [Fact]
+        public void ObjWith_TypeConverter()
+        {
+            var configuration = TestHelpers.GetConfigurationFromJsonString("""
+                {
+                    "Location":
+                    {
+                        "Latitude": 3,
+                        "Longitude": 4,
+                    }
+                }
+                """);
+
+            // TypeConverter impl is not honored (https://github.com/dotnet/runtime/issues/83599).
+
+            GeolocationWrapper obj = configuration.Get<GeolocationWrapper>();
+            ValidateGeolocation(obj.Location);
+
+            configuration = TestHelpers.GetConfigurationFromJsonString(""" { "Geolocation": "3, 4", } """);
+            obj = configuration.Get<GeolocationWrapper>();
+            Assert.Equal(Geolocation.Zero, obj.Location);
+        }
+
+        [Fact]
+        public void ComplexObj_As_Dictionary_Element()
+        {
+            var configuration = TestHelpers.GetConfigurationFromJsonString("""
+                {
+                    "First":
+                    {
+                        "Latitude": 3,
+                        "Longitude": 4,
+                    }
+                }
+                """);
+
+            Geolocation obj = configuration.Get<IDictionary<string, Geolocation>>()["First"];
+            ValidateGeolocation(obj);
+            obj = configuration.Get<IReadOnlyDictionary<string, Geolocation>>()["First"];
+            ValidateGeolocation(obj);
+
+            GeolocationClass obj1 = configuration.Get<IDictionary<string, GeolocationClass>>()["First"];
+            ValidateGeolocation(obj1);
+            obj1 = configuration.Get<IReadOnlyDictionary<string, GeolocationClass>>()["First"];
+            ValidateGeolocation(obj1);
+
+            GeolocationRecord obj2 = configuration.Get<IDictionary<string, GeolocationRecord>>()["First"];
+            ValidateGeolocation(obj2);
+            obj1 = configuration.Get<IReadOnlyDictionary<string, GeolocationClass>>()["First"];
+            ValidateGeolocation(obj2);
+        }
+
+        [Fact]
+        public void ComplexObj_As_Enumerable_Element()
+        {
+            var configuration = TestHelpers.GetConfigurationFromJsonString("""{ "Enumerable": [{ "Latitude": 3, "Longitude": 4 }] }""")
+                .GetSection("Enumerable");
+
+            Geolocation obj = configuration.Get<IList<Geolocation>>()[0];
+            ValidateGeolocation(obj);
+
+            obj = configuration.Get<Geolocation[]>()[0];
+            ValidateGeolocation(obj);
+
+            obj = configuration.Get<IReadOnlyList<Geolocation>>()[0];
+            ValidateGeolocation(obj);
+        }
+
+#if !BUILDING_SOURCE_GENERATOR_TESTS
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsNotBrowser))]
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/91923", typeof(PlatformDetection), nameof(PlatformDetection.IsMonoRuntime), nameof(PlatformDetection.IsBuiltWithAggressiveTrimming), nameof(PlatformDetection.IsAppleMobile))]
+        public void TraceSwitchTest()
+        {
+            var dic = new Dictionary<string, string>
+            {
+                {"TraceSwitch:Level", "Info"}
+            };
+            var configurationBuilder = new ConfigurationBuilder();
+            configurationBuilder.AddInMemoryCollection(dic);
+            var config = configurationBuilder.Build();
+
+            TraceSwitch ts = new(displayName: "TraceSwitch", description: "This switch is set via config.");
+            ConfigurationBinder.Bind(config, "TraceSwitch", ts);
+            Assert.Equal(TraceLevel.Info, ts.Level);
+#if NET
+            // Value property is not publicly exposed in .NET Framework.
+            Assert.Equal("Info", ts.Value);
+#endif // NET
+        }
+#endif
+
+        private void ValidateGeolocation(IGeolocation location)
+        {
+            Assert.Equal(3, location.Latitude);
+            Assert.Equal(4, location.Longitude);
+        }
+
+        [Fact]
+#if !BUILDING_SOURCE_GENERATOR_TESTS
+        [ActiveIssue("Investigate Build browser-wasm linux Release LibraryTests_EAT CI failure for reflection impl", TestPlatforms.Browser)]
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/91923", typeof(PlatformDetection), nameof(PlatformDetection.IsMonoRuntime), nameof(PlatformDetection.IsBuiltWithAggressiveTrimming), nameof(PlatformDetection.IsAppleMobile))]
+#endif
+        public void TestGraphWithUnsupportedMember()
+        {
+            var configuration = TestHelpers.GetConfigurationFromJsonString("""{ "WriterOptions": { "Indented": "true" } }""");
+            var obj = new GraphWithUnsupportedMember();
+            configuration.Bind(obj);
+            Assert.True(obj.WriterOptions.Indented);
+
+            // Encoder prop not supported; throw if there's config data.
+            configuration = TestHelpers.GetConfigurationFromJsonString("""{ "WriterOptions": { "Indented": "true", "Encoder": { "Random": "" } } }""");
+            Assert.Throws<InvalidOperationException>(() => configuration.Bind(obj));
+        }
+
+        [Fact]
+        public void CanBindToObjectMembers()
+        {
+            var config = TestHelpers.GetConfigurationFromJsonString("""{ "Local": { "Authority": "Auth1" } }""");
+
+            // Regression tests for https://github.com/dotnet/runtime/issues/89273 and https://github.com/dotnet/runtime/issues/89732.
+            TestBind(options => config.Bind("Local", options.GenericProp), obj => obj.GenericProp);
+            TestBind(options => config.GetSection("Local").Bind(options.NonGenericProp), obj => obj.NonGenericProp);
+            TestBind(options => config.GetSection("Local").Bind(options._genericField, _ => { }), obj => obj._genericField);
+            TestBind(options => config.Bind("Local", options._nonGenericField), obj => obj._nonGenericField);
+
+            // Check statics.
+            TestBind(options => config.GetSection("Local").Bind(RemoteAuthenticationOptions<OidcProviderOptions>.StaticGenericProp), obj => RemoteAuthenticationOptions<OidcProviderOptions>.StaticGenericProp);
+            TestBind(options => config.GetSection("Local").Bind(RemoteAuthenticationOptions<OidcProviderOptions>.StaticNonGenericProp, _ => { }), obj => RemoteAuthenticationOptions<OidcProviderOptions>.StaticNonGenericProp);
+            TestBind(options => config.Bind("Local", RemoteAuthenticationOptions<OidcProviderOptions>.s_GenericField), obj => RemoteAuthenticationOptions<OidcProviderOptions>.s_GenericField);
+            TestBind(options => config.GetSection("Local").Bind(RemoteAuthenticationOptions<OidcProviderOptions>.s_NonGenericField), obj => RemoteAuthenticationOptions<OidcProviderOptions>.s_NonGenericField);
+
+            // No null refs.
+            config.GetSection("Local").Bind(new RemoteAuthenticationOptions<OidcProviderOptions>().NullGenericProp);
+            config.GetSection("Local").Bind(RemoteAuthenticationOptions<OidcProviderOptions>.s_NullNonGenericField);
+
+            static void TestBind(Action<RemoteAuthenticationOptions<OidcProviderOptions>> configure, Func<RemoteAuthenticationOptions<OidcProviderOptions>, OidcProviderOptions> getBindedProp)
+            {
+                var obj = new RemoteAuthenticationOptions<OidcProviderOptions>();
+                configure(obj);
+                Assert.Equal("Auth1", getBindedProp(obj).Authority);
+            }
+        }
+
+        [Fact]
+        public void BinderSupportsObjCreationInput()
+        {
+            var configuration = new ConfigurationBuilder().Build();
+            // No diagnostic warning SYSLIB1104.
+            configuration.Bind(new GraphWithUnsupportedMember());
+        }
+
+        [Fact]
+        public void TestNullHandling_Get()
+        {
+            // Null configuration.
+            IConfiguration? configuration = null;
+
+            Assert.Throws<ArgumentNullException>(() => configuration.Get<GeolocationClass>());
+            Assert.Throws<ArgumentNullException>(() => configuration.Get<GeolocationClass>(_ => { }));
+            Assert.Throws<ArgumentNullException>(() => configuration.Get<Geolocation>());
+            Assert.Throws<ArgumentNullException>(() => configuration.Get<Geolocation>(_ => { }));
+
+            // Null Type.
+            configuration = TestHelpers.GetConfigurationFromJsonString(@"{""Longitude"":1,""Latitude"":2}");
+#pragma warning disable SYSLIB1104 // The target type for a binder call could not be determined
+            Assert.Throws<ArgumentNullException>(() => configuration.Get(type: null));
+            Assert.Throws<ArgumentNullException>(() => configuration.Get(type: null, _ => { }));
+#pragma warning restore SYSLIB1104 // The target type for a binder call could not be determined
+        }
+
+        [Fact]
+        public void TestNullHandling_GetValue()
+        {
+            string key = "Longitude";
+
+            // Null configuration.
+            Test(configuration: null, key);
+
+            // Null type.
+            IConfiguration configuration = TestHelpers.GetConfigurationFromJsonString(@"{""Longitude"":1,""Latitude"":2}");
+#pragma warning disable SYSLIB1104 // The target type for a binder call could not be determined
+            Assert.Throws<ArgumentNullException>(() => configuration.GetValue(type: null, key));
+            Assert.Throws<ArgumentNullException>(() => configuration.GetValue(type: null, key, defaultValue: null));
+#pragma warning restore SYSLIB1104 // The target type for a binder call could not be determined
+
+            // Null key.
+            Test(configuration: configuration, key: null);
+
+            void Test(IConfiguration? configuration, string? key)
+            {
+                Assert.Throws<ArgumentNullException>(() => configuration.GetValue<GeolocationClass>(key));
+                Assert.Throws<ArgumentNullException>(() => configuration.GetValue<GeolocationClass>(key, defaultValue: null));
+                Assert.Throws<ArgumentNullException>(() => configuration.GetValue<Geolocation>(key));
+                Assert.Throws<ArgumentNullException>(() => configuration.GetValue<Geolocation>(key, defaultValue: default));
+                TestUntypedOverloads(configuration: null, key);
+            }
+
+            void TestUntypedOverloads(IConfiguration? configuration, string? key)
+            {
+                Assert.Throws<ArgumentNullException>(() => configuration.GetValue(typeof(GeolocationClass), key));
+                Assert.Throws<ArgumentNullException>(() => configuration.GetValue(typeof(GeolocationClass), key, defaultValue: null));
+                Assert.Throws<ArgumentNullException>(() => configuration.GetValue(typeof(GeolocationClass), key, new GeolocationClass()));
+                Assert.Throws<ArgumentNullException>(() => configuration.GetValue(typeof(Geolocation), key));
+                Assert.Throws<ArgumentNullException>(() => configuration.GetValue(typeof(Geolocation), key, defaultValue: null));
+                Assert.Throws<ArgumentNullException>(() => configuration.GetValue(typeof(Geolocation), key, default(Geolocation)));
+            }
+        }
+
+        [Fact]
+        public void TestNullHandling_Bind()
+        {
+            // Null configuration.
+            IConfiguration? configuration = null;
+            GeolocationClass? location = new();
+            Assert.Throws<ArgumentNullException>(() => configuration.Bind(location));
+            Assert.Throws<ArgumentNullException>(() => configuration.Bind(location, _ => { }));
+            Assert.Throws<ArgumentNullException>(() => configuration.Bind("", location));
+
+            // Null object.
+            configuration = TestHelpers.GetConfigurationFromJsonString(@"{""Longitude"":1,""Latitude"":2}");
+            location = null;
+            // Expect no exceptions.
+            configuration.Bind(location);
+            configuration.Bind(location, _ => { });
+            configuration.Bind("", location);
+        }
+
+        [Fact]
+        public void TestAbstractTypeAsNestedMemberForBinding()
+        {
+            // Regression test for https://github.com/dotnet/runtime/issues/91324.
+
+            IConfiguration configuration = new ConfigurationBuilder().AddInMemoryCollection(
+                new KeyValuePair<string, string?>[]
+                {
+                     new KeyValuePair<string, string?>("ConfigBindRepro:EndPoints:0", "localhost"),
+                     new KeyValuePair<string, string?>("ConfigBindRepro:Property", "true")
+                })
+                .Build();
+
+            AClass settings = new();
+            configuration.GetSection("ConfigBindRepro").Bind(settings);
+
+            Assert.Empty(settings.EndPoints); // Need custom binding feature to map "localhost" string into Endpoint instance.
+            Assert.True(settings.Property);
+        }
+
+        [Fact]
+        public static void TestGettingAbstractType()
+        {
+            IConfiguration configuration = TestHelpers.GetConfigurationFromJsonString(@"{""Value"":1}");
+            Assert.Throws<InvalidOperationException>(() => configuration.Get<AbstractBase>());
+        }
+
+        [Fact]
+        public static void TestBindingAbstractInstance()
+        {
+            // Regression tests for https://github.com/dotnet/runtime/issues/90974.
+            // We only bind members on the declared binding type, i.e. AbstractBase, even
+            // though the actual instances are derived types that may have their own properties.
+
+            IConfiguration configuration = TestHelpers.GetConfigurationFromJsonString(@"{""Value"":1,""Value2"":2}");
+
+            AbstractBase d = new Derived();
+            configuration.Bind(d);
+            Assert.Equal(1, d.Value);
+
+            d = new DerivedWithAnotherProp();
+            configuration.Bind(d);
+            Assert.Equal(1, d.Value);
+
+#if BUILDING_SOURCE_GENERATOR_TESTS
+            // Divergence from reflection impl: reflection binds using instance type,
+            // while src-gen can only use declared type (everything has to be known AOT).
+            // This could change if we add an explicit API to indicate the expected runtime type(s).
+            Assert.Equal(0, ((DerivedWithAnotherProp)d).Value2);
+#else
+            Assert.Equal(2, ((DerivedWithAnotherProp)d).Value2);
+#endif
+        }
+
+        [Fact]
+        public static void TestBindingAbstractMember_AsCtorParam()
+        {
+            IConfiguration configuration = TestHelpers.GetConfigurationFromJsonString(@"{ ""AbstractProp"": {""Value"":1} }");
+            Assert.Throws<InvalidOperationException>(configuration.Get<ClassWithAbstractCtorParam>);
+            Assert.Throws<InvalidOperationException>(configuration.Get<ClassWithOptionalAbstractCtorParam>);
+        }
+
+        [Fact]
+        public static void TestBindingInitializedAbstractMember()
+        {
+            IConfiguration configuration = TestHelpers.GetConfigurationFromJsonString(@"{ ""AbstractProp"": {""Value"":1} }");
+            ClassWithAbstractProp c = new();
+            c.AbstractProp = new Derived();
+            configuration.Bind(c);
+            Assert.Equal(1, c.AbstractProp.Value);
+        }
+
+        [Fact]
+        public static void TestBindingUninitializedAbstractMember()
+        {
+            IConfiguration configuration = TestHelpers.GetConfigurationFromJsonString(@"{ ""AbstractProp"": {""Value"":1} }");
+            ClassWithAbstractProp c = new();
+            c.AbstractProp = null;
+            Assert.Throws<InvalidOperationException>(() => configuration.Bind(c));
+        }
+
+        [Fact]
+        public void GetIConfigurationSection()
+        {
+            var configuration = TestHelpers.GetConfigurationFromJsonString("""
+                {
+                    "vaLue": "MyString",
+                }
+                """);
+
+            var obj = configuration.GetSection("value").Get<IConfigurationSection>();
+            Assert.Equal("MyString", obj.Value);
+
+            configuration = TestHelpers.GetConfigurationFromJsonString("""
+                {
+                    "vaLue": [ "MyString", { "nested": "value" } ],
+                }
+                """);
+
+            var list = configuration.GetSection("value").Get<List<IConfigurationSection>>();
+            ValidateList(list);
+
+            var dict = configuration.Get<Dictionary<string, List<IConfigurationSection>>>();
+            Assert.Equal(1, dict.Count);
+            ValidateList(dict["vaLue"]);
+
+            static void ValidateList(List<IConfigurationSection> list)
+            {
+                Assert.Equal(2, list.Count);
+                Assert.Equal("0", list[0].Key);
+                Assert.Equal("MyString", list[0].Value);
+
+                Assert.Equal("1", list[1].Key);
+                var nestedSection = Assert.IsAssignableFrom<IConfigurationSection>(list[1].GetSection("nested"));
+                Assert.Equal("value", nestedSection.Value);
+            }
+        }
+
+        [Fact]
+        public void NullableDictKeys()
+        {
+            var configuration = TestHelpers.GetConfigurationFromJsonString("""{ "1": "MyString" }""");
+            var dict = configuration.Get<Dictionary<int?, string>>();
+            Assert.Empty(dict);
+        }
+
+        [Fact]
+        public void IConfigurationSectionAsCtorParam()
+        {
+            var configuration = TestHelpers.GetConfigurationFromJsonString("""
+                {
+                    "MySection": "MySection",
+                    "MyObject": "MyObject",
+                    "MyString": "MyString",
+                }
+                """);
+
+            var obj = configuration.Get<ClassWith_DirectlyAssignable_CtorParams>();
+            Assert.Equal("MySection", obj.MySection.Value);
+            Assert.Equal("MyObject", obj.MyObject);
+            Assert.Equal("MyString", obj.MyString);
+        }
+
+        [Fact]
+        public void SharedChildInstance()
+        {
+            var builder = new ConfigurationBuilder();
+            builder.AddInMemoryCollection(new KeyValuePair<string, string?>[]
+            {
+                new("A:B:ConnectionString", "localhost"),
+            });
+
+            var config = builder.Build();
+
+            SharedChildInstance_Class instance = new();
+            config.GetSection("A:B").Bind(instance);
+            Assert.Equal("localhost", instance.ConnectionString);
+
+            // Binding to a new section should not set the value to null.
+            config.GetSection("A").Bind(instance);
+            Assert.Equal("localhost", instance.ConnectionString);
+        }
+
+        [Fact]
+        public void CanBindToMockConfigurationSection()
+        {
+            const string expectedA = "hello";
+
+            var configSource = new MemoryConfigurationSource()
+            {
+                InitialData = new Dictionary<string, string?>()
+                {
+                    [$":{nameof(SimplePoco.A)}"] = expectedA,
+                }
+            };
+            var configRoot = new MockConfigurationRoot(new[] { configSource.Build(null) });
+            var configSection = new ConfigurationSection(configRoot, string.Empty);
+
+            SimplePoco result = new();
+            configSection.Bind(result);
+
+            Assert.Equal(expectedA, result.A);
+            Assert.Equal(default(string), result.B);
+        }
+
+        // a mock configuration root that will return null for undefined Sections,
+        // as is common when Configuration interfaces are mocked
+        class MockConfigurationRoot : ConfigurationRoot, IConfigurationRoot
+        {
+            public MockConfigurationRoot(IList<IConfigurationProvider> providers) : base(providers)
+            { }
+
+            IConfigurationSection IConfiguration.GetSection(string key) =>
+                this[key] is null ? null : new ConfigurationSection(this, key);
+        }
+
+        [Fact]
+        public void CanBindToClassWithNewProperties()
+        {
+            /// the source generator will bind to the most derived property only.
+            /// the reflection binder will bind the same data to all properties (including hidden).
+            
+            var config = TestHelpers.GetConfigurationFromJsonString("""
+                {
+                    "A": "AVal",
+                    "B": "5",
+                    "C": "CVal",
+                    "D": "DVal",
+                    "E": "Option2",
+                    "F": "FVal",
+                    "X": "52"
+                }
+                """);
+            var obj = new DerivedClassWithHiddenMembers();
+
+            config.Bind(obj);
+
+            BaseForHiddenMembers baseObj = obj;
+            IntermediateDerivedClass intermediateObj = obj;
+
+            Assert.Equal("ADerived", obj.A);
+#if BUILDING_SOURCE_GENERATOR_TESTS
+            // source generator will not set hidden property
+            Assert.Null(baseObj.A);
+#else
+            // reflection binder will set hidden property
+            Assert.Equal("AVal", baseObj.A);
+#endif
+
+            Assert.Equal(5, obj.B);
+#if BUILDING_SOURCE_GENERATOR_TESTS
+            // source generator will not set hidden property
+            Assert.Null(baseObj.B);
+#else
+            // reflection binder will set hidden property
+            Assert.Equal("5", baseObj.B);
+#endif
+
+            Assert.Equal(TestSettingsEnum2.Option2, obj.E);
+            Assert.Equal(TestSettingsEnum.Option2, baseObj.E);
+
+            Assert.Equal("DC", obj.C);
+            // The setter should still be called, even when only getter is overridden.
+            Assert.Equal("CVal", obj.CBase);
+
+            // can hide a readonly property with r/w property
+            Assert.Null(baseObj.D);
+            Assert.Equal("DD", obj.D);
+            // The setter should still be called, even when only getter is overridden.
+            Assert.Equal("DVal", obj.DBase);
+
+            Assert.Equal("DF", obj.F);
+            Assert.Equal("FVal", obj.FBase);
+
+            Assert.Equal(53, obj.X);
+            Assert.Equal(53, obj.XBase);
         }
     }
 }

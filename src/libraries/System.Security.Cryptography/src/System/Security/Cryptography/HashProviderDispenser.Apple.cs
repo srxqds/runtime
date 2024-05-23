@@ -21,8 +21,49 @@ namespace System.Security.Cryptography
             return new AppleHmacProvider(hashAlgorithmId, key);
         }
 
+        internal static bool HashSupported(string hashAlgorithmId)
+        {
+            switch (hashAlgorithmId)
+            {
+                case HashAlgorithmNames.MD5:
+                case HashAlgorithmNames.SHA1:
+                case HashAlgorithmNames.SHA256:
+                case HashAlgorithmNames.SHA384:
+                case HashAlgorithmNames.SHA512:
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        internal static bool MacSupported(string hashAlgorithmId) => HashSupported(hashAlgorithmId);
+
+        internal static bool KmacSupported(string algorithmId)
+        {
+            _ = algorithmId;
+            return false;
+        }
+
         internal static class OneShotHashProvider
         {
+            public static int KmacData(
+                string algorithmId,
+                ReadOnlySpan<byte> key,
+                ReadOnlySpan<byte> source,
+                Span<byte> destination,
+                ReadOnlySpan<byte> customizationString,
+                bool xof)
+            {
+                _ = algorithmId;
+                _ = key;
+                _ = customizationString;
+                _ = source;
+                _ = destination;
+                _ = xof;
+                Debug.Fail("Platform should have checked if KMAC was available first.");
+                throw new UnreachableException();
+            }
+
             public static unsafe int MacData(
                 string hashAlgorithmId,
                 ReadOnlySpan<byte> key,
@@ -58,6 +99,15 @@ namespace System.Security.Cryptography
                 }
             }
 
+            public static void HashDataXof(string hashAlgorithmId, ReadOnlySpan<byte> source, Span<byte> destination)
+            {
+                _ = hashAlgorithmId;
+                _ = source;
+                _ = destination;
+                Debug.Fail("Caller should have checked if platform supported XOFs.");
+                throw new UnreachableException();
+            }
+
             public static unsafe int HashData(string hashAlgorithmId, ReadOnlySpan<byte> source, Span<byte> destination)
             {
                 Interop.AppleCrypto.PAL_HashAlgorithm algorithm = HashAlgorithmNames.HashAlgorithmToPal(hashAlgorithmId);
@@ -91,6 +141,7 @@ namespace System.Security.Cryptography
         {
             private readonly LiteHash _liteHash;
             private bool _running;
+            private ConcurrencyBlock _block;
 
             public AppleDigestProvider(string hashAlgorithmId)
             {
@@ -99,21 +150,30 @@ namespace System.Security.Cryptography
 
             public override void AppendHashData(ReadOnlySpan<byte> data)
             {
-                _liteHash.Append(data);
-                _running = true;
+                using (ConcurrencyBlock.Enter(ref _block))
+                {
+                    _liteHash.Append(data);
+                    _running = true;
+                }
             }
 
             public override int FinalizeHashAndReset(Span<byte> destination)
             {
-                int written = _liteHash.Finalize(destination);
-                // Apple's DigestFinal self-resets, so don't bother calling reset.
-                _running = false;
-                return written;
+                using (ConcurrencyBlock.Enter(ref _block))
+                {
+                    int written = _liteHash.Finalize(destination);
+                    // Apple's DigestFinal self-resets, so don't bother calling reset.
+                    _running = false;
+                    return written;
+                }
             }
 
             public override int GetCurrentHash(Span<byte> destination)
             {
-                return _liteHash.Current(destination);
+                using (ConcurrencyBlock.Enter(ref _block))
+                {
+                    return _liteHash.Current(destination);
+                }
             }
 
             public override int HashSizeInBytes => _liteHash.HashSizeInBytes;
@@ -128,10 +188,13 @@ namespace System.Security.Cryptography
 
             public override void Reset()
             {
-                if (_running)
+                using (ConcurrencyBlock.Enter(ref _block))
                 {
-                    _liteHash.Reset();
-                    _running = false;
+                    if (_running)
+                    {
+                        _liteHash.Reset();
+                        _running = false;
+                    }
                 }
             }
         }
@@ -141,6 +204,7 @@ namespace System.Security.Cryptography
             private readonly LiteHmac _liteHmac;
             private readonly byte[] _key;
             private bool _running;
+            private ConcurrencyBlock _block;
 
             public AppleHmacProvider(string hashAlgorithmId, ReadOnlySpan<byte> key)
             {
@@ -151,36 +215,45 @@ namespace System.Security.Cryptography
 
             public override void AppendHashData(ReadOnlySpan<byte> data)
             {
-                if (!_running)
+                using (ConcurrencyBlock.Enter(ref _block))
                 {
-                    _liteHmac.Reset(_key);
-                }
+                    if (!_running)
+                    {
+                        _liteHmac.Reset(_key);
+                    }
 
-                _liteHmac.Append(data);
-                _running = true;
+                    _liteHmac.Append(data);
+                    _running = true;
+                }
             }
 
             public override int FinalizeHashAndReset(Span<byte> destination)
             {
-                if (!_running)
+                using (ConcurrencyBlock.Enter(ref _block))
                 {
-                    _liteHmac.Reset(_key);
-                }
+                    if (!_running)
+                    {
+                        _liteHmac.Reset(_key);
+                    }
 
-                int written = _liteHmac.Finalize(destination);
-                _liteHmac.Reset(_key);
-                _running = false;
-                return written;
+                    int written = _liteHmac.Finalize(destination);
+                    _liteHmac.Reset(_key);
+                    _running = false;
+                    return written;
+                }
             }
 
             public override int GetCurrentHash(Span<byte> destination)
             {
-                if (!_running)
+                using (ConcurrencyBlock.Enter(ref _block))
                 {
-                    _liteHmac.Reset(_key);
-                }
+                    if (!_running)
+                    {
+                        _liteHmac.Reset(_key);
+                    }
 
-                return _liteHmac.Current(destination);
+                    return _liteHmac.Current(destination);
+                }
             }
 
             public override int HashSizeInBytes => _liteHmac.HashSizeInBytes;

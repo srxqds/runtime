@@ -68,19 +68,8 @@ void InitJITHelpers2();
 
 PCODE UnsafeJitFunction(PrepareCodeConfig* config,
                         COR_ILMETHOD_DECODER* header,
-                        CORJIT_FLAGS flags,
-                        ULONG* sizeOfCode = NULL);
-
-void setILIntrinsicMethodInfo(CORINFO_METHOD_INFO* methInfo,
-                              uint8_t* ilcode,
-                              int ilsize,
-                              int maxstack);
-
-
-void getMethodInfoHelper(MethodDesc * ftn,
-                         CORINFO_METHOD_HANDLE ftnHnd,
-                         COR_ILMETHOD_DECODER * header,
-                         CORINFO_METHOD_INFO *  methInfo);
+                        CORJIT_FLAGS* pJitFlags,
+                        ULONG* pSizeOfCode);
 
 void getMethodInfoILMethodHeaderHelper(
     COR_ILMETHOD_DECODER* header,
@@ -112,6 +101,25 @@ BOOL LoadDynamicInfoEntry(Module *currentModule,
 
 #endif // TARGET_X86
 
+// thread local struct to store the "thread static blocks"
+struct ThreadStaticBlockInfo
+{
+    uint32_t NonGCMaxThreadStaticBlocks;
+    void** NonGCThreadStaticBlocks;
+
+    uint32_t GCMaxThreadStaticBlocks;
+    void** GCThreadStaticBlocks;
+};
+
+#ifdef _MSC_VER
+EXTERN_C __declspec(thread)  ThreadStaticBlockInfo t_ThreadStatics;
+EXTERN_C __declspec(thread)  uint32_t t_NonGCThreadStaticBlocksSize;
+EXTERN_C __declspec(thread)  uint32_t t_GCThreadStaticBlocksSize;
+#else
+EXTERN_C __thread ThreadStaticBlockInfo t_ThreadStatics;
+EXTERN_C __thread uint32_t t_NonGCThreadStaticBlocksSize;
+EXTERN_C __thread uint32_t t_GCThreadStaticBlocksSize;
+#endif // _MSC_VER
 
 //
 // JIT HELPER ALIASING FOR PORTABILITY.
@@ -195,12 +203,6 @@ EXTERN_C FCDECL1(void*, JIT_GetSharedNonGCStaticBaseNoCtor_Portable, DomainLocal
 extern FCDECL1(Object*, JIT_NewS_MP_FastPortable, CORINFO_CLASS_HANDLE typeHnd_);
 extern FCDECL1(Object*, JIT_New, CORINFO_CLASS_HANDLE typeHnd_);
 
-#ifndef JIT_NewCrossContext
-#define JIT_NewCrossContext JIT_NewCrossContext_Portable
-#endif
-EXTERN_C FCDECL1(Object*, JIT_NewCrossContext, CORINFO_CLASS_HANDLE typeHnd_);
-EXTERN_C FCDECL1(Object*, JIT_NewCrossContext_Portable, CORINFO_CLASS_HANDLE typeHnd_);
-
 extern FCDECL1(StringObject*, AllocateString_MP_FastPortable, DWORD stringLength);
 extern FCDECL1(StringObject*, UnframedAllocateString, DWORD stringLength);
 extern FCDECL1(StringObject*, FramedAllocateString, DWORD stringLength);
@@ -239,6 +241,7 @@ extern "C" FCDECL2(VOID, JIT_WriteBarrierEnsureNonHeapTarget, Object **dst, Obje
 extern "C" FCDECL2(Object*, ChkCastAny_NoCacheLookup, CORINFO_CLASS_HANDLE type, Object* obj);
 extern "C" FCDECL2(Object*, IsInstanceOfAny_NoCacheLookup, CORINFO_CLASS_HANDLE type, Object* obj);
 extern "C" FCDECL2(LPVOID, Unbox_Helper, CORINFO_CLASS_HANDLE type, Object* obj);
+extern "C" FCDECL3(void, JIT_Unbox_Nullable, void * destPtr, CORINFO_CLASS_HANDLE type, Object* obj);
 
 // ARM64 JIT_WriteBarrier uses speciall ABI and thus is not callable directly
 // Copied write barriers must be called at a different location
@@ -322,17 +325,6 @@ EXTERN_C FCDECL2(Object*, JIT_NewArr1OBJ_MP_InlineGetThread, CORINFO_CLASS_HANDL
 
 EXTERN_C FCDECL2_VV(INT64, JIT_LMul, INT64 val1, INT64 val2);
 
-EXTERN_C FCDECL1_V(INT64, JIT_Dbl2Lng, double val);
-EXTERN_C FCDECL1_V(INT64, JIT_Dbl2IntSSE2, double val);
-EXTERN_C FCDECL1_V(INT64, JIT_Dbl2LngP4x87, double val);
-EXTERN_C FCDECL1_V(INT64, JIT_Dbl2LngSSE3, double val);
-EXTERN_C FCDECL1_V(INT64, JIT_Dbl2LngOvf, double val);
-
-EXTERN_C FCDECL1_V(INT32, JIT_Dbl2IntOvf, double val);
-
-EXTERN_C FCDECL2_VV(float, JIT_FltRem, float dividend, float divisor);
-EXTERN_C FCDECL2_VV(double, JIT_DblRem, double dividend, double divisor);
-
 #ifndef HOST_64BIT
 #ifdef TARGET_X86
 // JIThelp.asm
@@ -397,19 +389,33 @@ extern "C"
 
 #endif // TARGET_AMD64 || TARGET_ARM
 
-    void STDCALL JIT_MemSet(void *dest, int c, SIZE_T count);
-    void STDCALL JIT_MemCpy(void *dest, const void *src, SIZE_T count);
-
     void STDMETHODCALLTYPE JIT_ProfilerEnterLeaveTailcallStub(UINT_PTR ProfilerHandle);
-#if !defined(TARGET_ARM64) && !defined(TARGET_LOONGARCH64)
+#if !defined(TARGET_ARM64) && !defined(TARGET_LOONGARCH64) && !defined(TARGET_RISCV64)
     void STDCALL JIT_StackProbe();
 #endif // TARGET_ARM64
 };
 
-
-
 /*********************************************************************/
 /*********************************************************************/
+
+// Transient data for a MethodDesc involved
+// in the current JIT compilation.
+struct TransientMethodDetails final
+{
+    MethodDesc* Method;
+    COR_ILMETHOD_DECODER* Header;
+    CORINFO_MODULE_HANDLE Scope;
+
+    TransientMethodDetails() = default;
+    TransientMethodDetails(MethodDesc* pMD, _In_opt_ COR_ILMETHOD_DECODER* header, CORINFO_MODULE_HANDLE scope);
+    TransientMethodDetails(const TransientMethodDetails&) = delete;
+    TransientMethodDetails(TransientMethodDetails&&);
+    ~TransientMethodDetails();
+
+    TransientMethodDetails& operator=(const TransientMethodDetails&) = delete;
+    TransientMethodDetails& operator=(TransientMethodDetails&&);
+};
+
 class CEEInfo : public ICorJitInfo
 {
     friend class CEEDynamicCodeInfo;
@@ -423,13 +429,14 @@ class CEEInfo : public ICorJitInfo
 public:
 #include "icorjitinfoimpl_generated.h"
     uint32_t getClassAttribsInternal (CORINFO_CLASS_HANDLE cls);
+    bool isObjectImmutableInteral(OBJECTREF obj);
 
     static unsigned getClassAlignmentRequirementStatic(TypeHandle clsHnd);
 
     static unsigned getClassGClayoutStatic(TypeHandle th, BYTE* gcPtrs);
     static CorInfoHelpFunc getNewHelperStatic(MethodTable * pMT, bool * pHasSideEffects);
     static CorInfoHelpFunc getNewArrHelperStatic(TypeHandle clsHnd);
-    static CorInfoHelpFunc getCastingHelperStatic(TypeHandle clsHnd, bool fThrowing, bool * pfClassMustBeRestored);
+    static CorInfoHelpFunc getCastingHelperStatic(TypeHandle clsHnd, bool fThrowing);
 
     // Returns that compilation flags that are shared between JIT and NGen
     static CORJIT_FLAGS GetBaseCompileFlags(MethodDesc * ftn);
@@ -440,17 +447,6 @@ public:
                             _Out_writes_ (FQNameCapacity) char * szFQName, size_t FQNameCapacity);
 
     DWORD getMethodAttribsInternal (CORINFO_METHOD_HANDLE ftnHnd);
-
-    // Given a method descriptor ftnHnd, extract signature information into sigInfo
-    // Obtain (representative) instantiation information from ftnHnd's owner class
-    //@GENERICSVER: added explicit owner parameter
-    // Internal version without JIT-EE transition
-    void getMethodSigInternal (
-            CORINFO_METHOD_HANDLE ftnHnd,
-            CORINFO_SIG_INFO* sigInfo,
-            CORINFO_CLASS_HANDLE owner = NULL,
-            SignatureKind signatureKind = SK_NOT_CALLSITE
-            );
 
     bool resolveVirtualMethodHelper(CORINFO_DEVIRTUALIZATION_INFO * info);
 
@@ -465,13 +461,6 @@ public:
     CorInfoType getFieldTypeInternal (CORINFO_FIELD_HANDLE field, CORINFO_CLASS_HANDLE* structType = NULL,CORINFO_CLASS_HANDLE owner = NULL);
 
 protected:
-
-    static void getEHinfoHelper(
-        CORINFO_METHOD_HANDLE   ftnHnd,
-        unsigned                EHnumber,
-        CORINFO_EH_CLAUSE*      clause,
-        COR_ILMETHOD_DECODER*   pILHeader);
-
     void freeArrayInternal(void* array);
 
 public:
@@ -481,6 +470,8 @@ public:
         CORINFO_SIG_INFO* sig,
         CORINFO_GET_TAILCALL_HELPERS_FLAGS flags,
         CORINFO_TAILCALL_HELPERS* pResult);
+
+    bool getStaticObjRefContent(OBJECTREF obj, uint8_t* buffer, bool ignoreMovableObjects);
 
     // This normalizes EE type information into the form expected by the JIT.
     //
@@ -493,6 +484,7 @@ public:
     CEEInfo(MethodDesc * fd = NULL, bool fAllowInlining = true) :
         m_pJitHandles(nullptr),
         m_pMethodBeingCompiled(fd),
+        m_transientDetails(NULL),
         m_pThread(GetThreadNULLOk()),
         m_hMethodForSecurity_Key(NULL),
         m_pMethodForSecurity_Value(NULL),
@@ -519,8 +511,9 @@ public:
                 DestroyHandle(elements[i]);
             }
             delete m_pJitHandles;
-            m_pJitHandles = nullptr;
         }
+
+        delete m_transientDetails;
 #endif
     }
 
@@ -546,27 +539,6 @@ private:
 #endif
 
 public:
-
-    enum ConvToJitSigFlags : int
-    {
-        CONV_TO_JITSIG_FLAGS_NONE                       = 0x0,
-        CONV_TO_JITSIG_FLAGS_LOCALSIG                   = 0x1,
-    };
-
-    //@GENERICS:
-    // The method handle is used to instantiate method and class type parameters
-    // It's also used to determine whether an extra dictionary parameter is required
-    static
-    void
-    ConvToJitSig(
-        PCCOR_SIGNATURE       pSig,
-        DWORD                 cbSig,
-        CORINFO_MODULE_HANDLE scopeHnd,
-        mdToken               token,
-        SigTypeContext*       context,
-        ConvToJitSigFlags     flags,
-        CORINFO_SIG_INFO *    sigRet);
-
     MethodDesc * GetMethodForSecurity(CORINFO_METHOD_HANDLE callerHandle);
 
     // Prepare the information about how to do a runtime lookup of the handle with shared
@@ -575,16 +547,23 @@ public:
                                                    CORINFO_RESOLVED_TOKEN * pResolvedToken,
                                                    CORINFO_RESOLVED_TOKEN * pConstrainedResolvedToken /* for ConstrainedMethodEntrySlot */,
                                                    MethodDesc * pTemplateMD /* for method-based slots */,
+                                                   MethodDesc * pCallerMD,
                                                    CORINFO_LOOKUP *pResultLookup);
 
 #if defined(FEATURE_GDBJIT)
     CalledMethod * GetCalledMethods() { return m_pCalledMethods; }
 #endif
 
+    // Add/Remove/Find transient method details.
+    void AddTransientMethodDetails(TransientMethodDetails details);
+    TransientMethodDetails RemoveTransientMethodDetails(MethodDesc* pMD);
+    bool FindTransientMethodDetails(MethodDesc* pMD, TransientMethodDetails** details);
+
 protected:
-    SArray<OBJECTHANDLE>*   m_pJitHandles;                      // GC handles used by JIT
-    MethodDesc*             m_pMethodBeingCompiled;             // Top-level method being compiled
-    Thread *                m_pThread;                          // Cached current thread for faster JIT-EE transitions
+    SArray<OBJECTHANDLE>*   m_pJitHandles;          // GC handles used by JIT
+    MethodDesc*             m_pMethodBeingCompiled; // Top-level method being compiled
+    SArray<TransientMethodDetails, FALSE>* m_transientDetails;   // Transient details for dynamic codegen scenarios.
+    Thread *                m_pThread;              // Cached current thread for faster JIT-EE transitions
     CORJIT_FLAGS            m_jitFlags;
 
     CORINFO_METHOD_HANDLE getMethodBeingCompiled()
@@ -664,7 +643,8 @@ public:
             PgoInstrumentationSchema** pSchema, /* OUT */
             uint32_t* pCountSchemaItems, /* OUT */
             uint8_t**pInstrumentationData, /* OUT */
-            PgoSource *pPgoSource /* OUT */
+            PgoSource *pPgoSource, /* OUT */
+            bool* pDynamicPgo /* OUT */
             ) override final;
 
     void recordCallSite(
@@ -678,7 +658,6 @@ public:
             void                    *locationRW,
             void                    *target,
             uint16_t                 fRelocType,
-            uint16_t                 slot,
             int32_t                  addlDelta) override final;
 
     uint16_t getRelocTypeHint(void * target) override final;
@@ -693,17 +672,13 @@ public:
         } CONTRACTL_END;
 
         if (m_CodeHeaderRW != m_CodeHeader)
-        {
-            delete [] (BYTE*)m_CodeHeaderRW;
-        }
+            freeArrayInternal(m_CodeHeaderRW);
 
         m_CodeHeader = NULL;
         m_CodeHeaderRW = NULL;
 
         m_codeWriteBufferSize = 0;
-#ifdef USE_INDIRECT_CODEHEADER
         m_pRealCodeHeader = NULL;
-#endif
         m_pCodeHeap = NULL;
 
         if (m_pOffsetMapping != NULL)
@@ -735,7 +710,7 @@ public:
 #endif
 
 #ifdef FEATURE_EH_FUNCLETS
-        m_moduleBase = NULL;
+        m_moduleBase = (TADDR)0;
         m_totalUnwindSize = 0;
         m_usedUnwindSize = 0;
         m_theUnwindBlock = NULL;
@@ -794,7 +769,7 @@ public:
         LIMITED_METHOD_CONTRACT;
         return 0;
     }
-#endif
+#endif // defined(TARGET_AMD64) || defined(TARGET_ARM64)
 
 #ifdef FEATURE_ON_STACK_REPLACEMENT
     // Called by the runtime to supply patchpoint information to the jit.
@@ -814,13 +789,11 @@ public:
           m_CodeHeader(NULL),
           m_CodeHeaderRW(NULL),
           m_codeWriteBufferSize(0),
-#ifdef USE_INDIRECT_CODEHEADER
           m_pRealCodeHeader(NULL),
-#endif
           m_pCodeHeap(NULL),
           m_ILHeader(header),
 #ifdef FEATURE_EH_FUNCLETS
-          m_moduleBase(NULL),
+          m_moduleBase(0),
           m_totalUnwindSize(0),
           m_usedUnwindSize(0),
           m_theUnwindBlock(NULL),
@@ -869,9 +842,7 @@ public:
         } CONTRACTL_END;
 
         if (m_CodeHeaderRW != m_CodeHeader)
-        {
-            delete [] (BYTE*)m_CodeHeaderRW;
-        }
+            freeArrayInternal(m_CodeHeaderRW);
 
         if (m_pOffsetMapping != NULL)
             freeArrayInternal(m_pOffsetMapping);
@@ -909,6 +880,8 @@ public:
         uint32_t                          numInlineTreeNodes,
         ICorDebugInfo::RichOffsetMapping* mappings,
         uint32_t                          numMappings) override final;
+
+    void reportMetadata(const char* key, const void* value, size_t length) override final;
 
     void* getHelperFtn(CorInfoHelpFunc    ftnNum,                         /* IN  */
                        void **            ppIndirection) override final;  /* OUT */
@@ -964,9 +937,7 @@ protected :
     CodeHeader*             m_CodeHeader;   // descriptor for JITTED code - read/execute address
     CodeHeader*             m_CodeHeaderRW; // descriptor for JITTED code - code write scratch buffer address
     size_t                  m_codeWriteBufferSize;
-#ifdef USE_INDIRECT_CODEHEADER
     BYTE*                   m_pRealCodeHeader;
-#endif
     HeapList*               m_pCodeHeap;
     COR_ILMETHOD_DECODER *  m_ILHeader;     // the code header as exist in the file
 #ifdef FEATURE_EH_FUNCLETS
@@ -1112,7 +1083,7 @@ EXTERN_C TypeHandle::CastResult STDCALL ObjIsInstanceOfCached(Object *pObject, T
 
 #ifdef HOST_64BIT
 class InlinedCallFrame;
-Thread * __stdcall JIT_InitPInvokeFrame(InlinedCallFrame *pFrame, PTR_VOID StubSecretArg);
+Thread * JIT_InitPInvokeFrame(InlinedCallFrame *pFrame);
 #endif
 
 #ifdef _DEBUG
@@ -1156,7 +1127,7 @@ CORINFO_GENERIC_HANDLE JIT_GenericHandleWorker(MethodDesc   *pMD,
                                                DWORD         dictionaryIndexAndSlot = -1,
                                                Module *      pModule = NULL);
 
-void ClearJitGenericHandleCache(AppDomain *pDomain);
+void ClearJitGenericHandleCache();
 
 CORJIT_FLAGS GetDebuggerCompileFlags(Module* pModule, CORJIT_FLAGS flags);
 

@@ -1,8 +1,6 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using Microsoft.CSharp;
-using Microsoft.VisualBasic;
 using System.CodeDom;
 using System.CodeDom.Compiler;
 using System.Collections;
@@ -10,6 +8,8 @@ using System.Globalization;
 using System.IO;
 using System.Reflection;
 using System.Runtime.Versioning;
+using Microsoft.CSharp;
+using Microsoft.VisualBasic;
 
 namespace System.Management
 {
@@ -957,7 +957,7 @@ namespace System.Management
                 cmp.GetStatements.Add(new CodeMethodReturnStatement(new CodePrimitiveExpression(propValue)));
             }
             cc.Members.Add(cmp);
-            if (Comment != null && Comment.Length != 0)
+            if (!string.IsNullOrEmpty(Comment))
             {
                 cmp.Comments.Add(new CodeCommentStatement(Comment));
             }
@@ -1001,7 +1001,7 @@ namespace System.Management
                 new CodeSnippetExpression("value")));
             cc.Members.Add(cmp);
 
-            if (Comment != null && Comment.Length != 0)
+            if (!string.IsNullOrEmpty(Comment))
             {
                 cmp.Comments.Add(new CodeCommentStatement(Comment));
             }
@@ -3710,7 +3710,7 @@ namespace System.Management
             }
             cc.Members.Add(cf);
 
-            if (Comment != null && Comment.Length != 0)
+            if (!string.IsNullOrEmpty(Comment))
             {
                 cf.Comments.Add(new CodeCommentStatement(Comment));
             }

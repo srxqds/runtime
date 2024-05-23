@@ -74,50 +74,8 @@ namespace System
 
     public static partial class Convert
     {
-        // A typeof operation is fairly expensive (does a system call), so we'll cache these here
-        // statically.  These are exactly lined up with the TypeCode, eg. ConvertType[TypeCode.Int16]
-        // will give you the type of an short.
-        internal static readonly Type[] ConvertTypes = {
-            typeof(System.Empty),
-            typeof(object),
-            typeof(System.DBNull),
-            typeof(bool),
-            typeof(char),
-            typeof(sbyte),
-            typeof(byte),
-            typeof(short),
-            typeof(ushort),
-            typeof(int),
-            typeof(uint),
-            typeof(long),
-            typeof(ulong),
-            typeof(float),
-            typeof(double),
-            typeof(decimal),
-            typeof(DateTime),
-            typeof(object), // TypeCode is discontinuous so we need a placeholder.
-            typeof(string)
-        };
-
-        // Need to special case Enum because typecode will be underlying type, e.g. Int32
-        private static readonly Type EnumType = typeof(Enum);
-
         private const int Base64LineBreakPosition = 76;
         private const int Base64VectorizationLengthThreshold = 16;
-
-#if DEBUG
-        static Convert()
-        {
-            Debug.Assert(ConvertTypes != null, "[Convert.cctor]ConvertTypes!=null");
-            Debug.Assert(ConvertTypes.Length == ((int)TypeCode.String + 1), "[Convert.cctor]ConvertTypes.Length == ((int)TypeCode.String + 1)");
-            Debug.Assert(ConvertTypes[(int)TypeCode.Empty] == typeof(System.Empty),
-                            "[Convert.cctor]ConvertTypes[(int)TypeCode.Empty]==typeof(System.Empty)");
-            Debug.Assert(ConvertTypes[(int)TypeCode.String] == typeof(string),
-                            "[Convert.cctor]ConvertTypes[(int)TypeCode.String]==typeof(System.String)");
-            Debug.Assert(ConvertTypes[(int)TypeCode.Int32] == typeof(int),
-                            "[Convert.cctor]ConvertTypes[(int)TypeCode.Int32]==typeof(int)");
-        }
-#endif
 
         // Constant representing the database null value. This value is used in
         // database applications to indicate the absence of a known value. Note
@@ -155,17 +113,12 @@ namespace System
         }
 
         // Converts the given object to the given type. In general, this method is
-        // equivalent to calling the Value.ToXXX(value) method for the given
+        // equivalent to calling ((IConvertible)value).ToXXX(CultureInfo.CurrentCulture) for the given
         // typeCode and boxing the result.
         //
         // The method first checks if the given object implements IConvertible. If not,
-        // the only permitted conversion is from a null to TypeCode.Empty, the
+        // the only permitted conversion is from a null to TypeCode.Empty/TypeCode.String/TypeCode.Object, the
         // result of which is null.
-        //
-        // If the object does implement IConvertible, a check is made to see if the
-        // object already has the given type code, in which case the object is
-        // simply returned. Otherwise, the appropriate ToXXX() is invoked on the
-        // object's implementation of IConvertible.
         [return: NotNullIfNotNull(nameof(value))]
         public static object? ChangeType(object? value, TypeCode typeCode)
         {
@@ -223,44 +176,44 @@ namespace System
                 return value;
             }
 
-            if (ReferenceEquals(targetType, ConvertTypes[(int)TypeCode.Boolean]))
+            if (ReferenceEquals(targetType, typeof(bool)))
                 return value.ToBoolean(provider);
-            if (ReferenceEquals(targetType, ConvertTypes[(int)TypeCode.Char]))
+            if (ReferenceEquals(targetType, typeof(char)))
                 return value.ToChar(provider);
-            if (ReferenceEquals(targetType, ConvertTypes[(int)TypeCode.SByte]))
+            if (ReferenceEquals(targetType, typeof(sbyte)))
                 return value.ToSByte(provider);
-            if (ReferenceEquals(targetType, ConvertTypes[(int)TypeCode.Byte]))
+            if (ReferenceEquals(targetType, typeof(byte)))
                 return value.ToByte(provider);
-            if (ReferenceEquals(targetType, ConvertTypes[(int)TypeCode.Int16]))
+            if (ReferenceEquals(targetType, typeof(short)))
                 return value.ToInt16(provider);
-            if (ReferenceEquals(targetType, ConvertTypes[(int)TypeCode.UInt16]))
+            if (ReferenceEquals(targetType, typeof(ushort)))
                 return value.ToUInt16(provider);
-            if (ReferenceEquals(targetType, ConvertTypes[(int)TypeCode.Int32]))
+            if (ReferenceEquals(targetType, typeof(int)))
                 return value.ToInt32(provider);
-            if (ReferenceEquals(targetType, ConvertTypes[(int)TypeCode.UInt32]))
+            if (ReferenceEquals(targetType, typeof(uint)))
                 return value.ToUInt32(provider);
-            if (ReferenceEquals(targetType, ConvertTypes[(int)TypeCode.Int64]))
+            if (ReferenceEquals(targetType, typeof(long)))
                 return value.ToInt64(provider);
-            if (ReferenceEquals(targetType, ConvertTypes[(int)TypeCode.UInt64]))
+            if (ReferenceEquals(targetType, typeof(ulong)))
                 return value.ToUInt64(provider);
-            if (ReferenceEquals(targetType, ConvertTypes[(int)TypeCode.Single]))
+            if (ReferenceEquals(targetType, typeof(float)))
                 return value.ToSingle(provider);
-            if (ReferenceEquals(targetType, ConvertTypes[(int)TypeCode.Double]))
+            if (ReferenceEquals(targetType, typeof(double)))
                 return value.ToDouble(provider);
-            if (ReferenceEquals(targetType, ConvertTypes[(int)TypeCode.Decimal]))
+            if (ReferenceEquals(targetType, typeof(decimal)))
                 return value.ToDecimal(provider);
-            if (ReferenceEquals(targetType, ConvertTypes[(int)TypeCode.DateTime]))
+            if (ReferenceEquals(targetType, typeof(DateTime)))
                 return value.ToDateTime(provider);
-            if (ReferenceEquals(targetType, ConvertTypes[(int)TypeCode.String]))
+            if (ReferenceEquals(targetType, typeof(string)))
                 return value.ToString(provider);
-            if (ReferenceEquals(targetType, ConvertTypes[(int)TypeCode.Object]))
+            if (ReferenceEquals(targetType, typeof(object)))
                 return (object)value;
             // Need to special case Enum because typecode will be underlying type, e.g. Int32
-            if (ReferenceEquals(targetType, EnumType))
+            if (ReferenceEquals(targetType, typeof(Enum)))
                 return (Enum)value;
-            if (ReferenceEquals(targetType, ConvertTypes[(int)TypeCode.DBNull]))
+            if (ReferenceEquals(targetType, typeof(DBNull)))
                 throw new InvalidCastException(SR.InvalidCast_DBNull);
-            if (ReferenceEquals(targetType, ConvertTypes[(int)TypeCode.Empty]))
+            if (ReferenceEquals(targetType, typeof(Empty)))
                 throw new InvalidCastException(SR.InvalidCast_Empty);
 
             throw new InvalidCastException(SR.Format(SR.InvalidCast_FromTo, value.GetType().FullName, targetType.FullName));
@@ -295,37 +248,37 @@ namespace System
                 throw new InvalidCastException(SR.InvalidCast_IConvertible);
             }
 
-            if (ReferenceEquals(conversionType, ConvertTypes[(int)TypeCode.Boolean]))
+            if (ReferenceEquals(conversionType, typeof(bool)))
                 return ic.ToBoolean(provider);
-            if (ReferenceEquals(conversionType, ConvertTypes[(int)TypeCode.Char]))
+            if (ReferenceEquals(conversionType, typeof(char)))
                 return ic.ToChar(provider);
-            if (ReferenceEquals(conversionType, ConvertTypes[(int)TypeCode.SByte]))
+            if (ReferenceEquals(conversionType, typeof(sbyte)))
                 return ic.ToSByte(provider);
-            if (ReferenceEquals(conversionType, ConvertTypes[(int)TypeCode.Byte]))
+            if (ReferenceEquals(conversionType, typeof(byte)))
                 return ic.ToByte(provider);
-            if (ReferenceEquals(conversionType, ConvertTypes[(int)TypeCode.Int16]))
+            if (ReferenceEquals(conversionType, typeof(short)))
                 return ic.ToInt16(provider);
-            if (ReferenceEquals(conversionType, ConvertTypes[(int)TypeCode.UInt16]))
+            if (ReferenceEquals(conversionType, typeof(ushort)))
                 return ic.ToUInt16(provider);
-            if (ReferenceEquals(conversionType, ConvertTypes[(int)TypeCode.Int32]))
+            if (ReferenceEquals(conversionType, typeof(int)))
                 return ic.ToInt32(provider);
-            if (ReferenceEquals(conversionType, ConvertTypes[(int)TypeCode.UInt32]))
+            if (ReferenceEquals(conversionType, typeof(uint)))
                 return ic.ToUInt32(provider);
-            if (ReferenceEquals(conversionType, ConvertTypes[(int)TypeCode.Int64]))
+            if (ReferenceEquals(conversionType, typeof(long)))
                 return ic.ToInt64(provider);
-            if (ReferenceEquals(conversionType, ConvertTypes[(int)TypeCode.UInt64]))
+            if (ReferenceEquals(conversionType, typeof(ulong)))
                 return ic.ToUInt64(provider);
-            if (ReferenceEquals(conversionType, ConvertTypes[(int)TypeCode.Single]))
+            if (ReferenceEquals(conversionType, typeof(float)))
                 return ic.ToSingle(provider);
-            if (ReferenceEquals(conversionType, ConvertTypes[(int)TypeCode.Double]))
+            if (ReferenceEquals(conversionType, typeof(double)))
                 return ic.ToDouble(provider);
-            if (ReferenceEquals(conversionType, ConvertTypes[(int)TypeCode.Decimal]))
+            if (ReferenceEquals(conversionType, typeof(decimal)))
                 return ic.ToDecimal(provider);
-            if (ReferenceEquals(conversionType, ConvertTypes[(int)TypeCode.DateTime]))
+            if (ReferenceEquals(conversionType, typeof(DateTime)))
                 return ic.ToDateTime(provider);
-            if (ReferenceEquals(conversionType, ConvertTypes[(int)TypeCode.String]))
+            if (ReferenceEquals(conversionType, typeof(string)))
                 return ic.ToString(provider);
-            if (ReferenceEquals(conversionType, ConvertTypes[(int)TypeCode.Object]))
+            if (ReferenceEquals(conversionType, typeof(object)))
                 return (object)value;
 
             return ic.ToType(conversionType, provider);
@@ -2099,7 +2052,7 @@ namespace System
         {
             if (fromBase != 2 && fromBase != 8 && fromBase != 10 && fromBase != 16)
             {
-                throw new ArgumentException(SR.Arg_InvalidBase);
+                ThrowInvalidBase();
             }
 
             if (value == null)
@@ -2122,7 +2075,7 @@ namespace System
         {
             if (fromBase != 2 && fromBase != 8 && fromBase != 10 && fromBase != 16)
             {
-                throw new ArgumentException(SR.Arg_InvalidBase);
+                ThrowInvalidBase();
             }
 
             if (value == null)
@@ -2147,7 +2100,7 @@ namespace System
         {
             if (fromBase != 2 && fromBase != 8 && fromBase != 10 && fromBase != 16)
             {
-                throw new ArgumentException(SR.Arg_InvalidBase);
+                ThrowInvalidBase();
             }
 
             if (value == null)
@@ -2173,7 +2126,7 @@ namespace System
         {
             if (fromBase != 2 && fromBase != 8 && fromBase != 10 && fromBase != 16)
             {
-                throw new ArgumentException(SR.Arg_InvalidBase);
+                ThrowInvalidBase();
             }
 
             if (value == null)
@@ -2195,7 +2148,7 @@ namespace System
         {
             if (fromBase != 2 && fromBase != 8 && fromBase != 10 && fromBase != 16)
             {
-                throw new ArgumentException(SR.Arg_InvalidBase);
+                ThrowInvalidBase();
             }
             return value != null ?
                 ParseNumbers.StringToInt(value.AsSpan(), fromBase, ParseNumbers.IsTight) :
@@ -2211,7 +2164,7 @@ namespace System
         {
             if (fromBase != 2 && fromBase != 8 && fromBase != 10 && fromBase != 16)
             {
-                throw new ArgumentException(SR.Arg_InvalidBase);
+                ThrowInvalidBase();
             }
             return value != null ?
                 (uint)ParseNumbers.StringToInt(value.AsSpan(), fromBase, ParseNumbers.TreatAsUnsigned | ParseNumbers.IsTight) :
@@ -2226,7 +2179,7 @@ namespace System
         {
             if (fromBase != 2 && fromBase != 8 && fromBase != 10 && fromBase != 16)
             {
-                throw new ArgumentException(SR.Arg_InvalidBase);
+                ThrowInvalidBase();
             }
             return value != null ?
                 ParseNumbers.StringToLong(value.AsSpan(), fromBase, ParseNumbers.IsTight) :
@@ -2242,7 +2195,7 @@ namespace System
         {
             if (fromBase != 2 && fromBase != 8 && fromBase != 10 && fromBase != 16)
             {
-                throw new ArgumentException(SR.Arg_InvalidBase);
+                ThrowInvalidBase();
             }
             return value != null ?
                 (ulong)ParseNumbers.StringToLong(value.AsSpan(), fromBase, ParseNumbers.TreatAsUnsigned | ParseNumbers.IsTight) :
@@ -2250,43 +2203,111 @@ namespace System
         }
 
         // Convert the byte value to a string in base fromBase
-        public static string ToString(byte value, int toBase)
-        {
-            if (toBase != 2 && toBase != 8 && toBase != 10 && toBase != 16)
-            {
-                throw new ArgumentException(SR.Arg_InvalidBase);
-            }
-            return ParseNumbers.IntToString((int)value, toBase, -1, ' ', ParseNumbers.PrintAsI1);
-        }
+        public static string ToString(byte value, int toBase) =>
+            ToString((int)value, toBase);
 
         // Convert the Int16 value to a string in base fromBase
         public static string ToString(short value, int toBase)
         {
-            if (toBase != 2 && toBase != 8 && toBase != 10 && toBase != 16)
+            string format = "d";
+
+            switch (toBase)
             {
-                throw new ArgumentException(SR.Arg_InvalidBase);
-            }
-            return ParseNumbers.IntToString((int)value, toBase, -1, ' ', ParseNumbers.PrintAsI2);
+                case 2:
+                    format = "b";
+                    break;
+
+                case 8:
+                    return ToOctalString((ushort)value);
+
+                case 10:
+                    break;
+
+                case 16:
+                    format = "x";
+                    break;
+
+                default:
+                    ThrowInvalidBase();
+                    break;
+            };
+
+            return value.ToString(format, CultureInfo.InvariantCulture);
         }
 
         // Convert the Int32 value to a string in base toBase
         public static string ToString(int value, int toBase)
         {
-            if (toBase != 2 && toBase != 8 && toBase != 10 && toBase != 16)
+            string format = "d";
+
+            switch (toBase)
             {
-                throw new ArgumentException(SR.Arg_InvalidBase);
-            }
-            return ParseNumbers.IntToString(value, toBase, -1, ' ', 0);
+                case 2:
+                    format = "b";
+                    break;
+
+                case 8:
+                    return ToOctalString((uint)value);
+
+                case 10:
+                    break;
+
+                case 16:
+                    format = "x";
+                    break;
+
+                default:
+                    ThrowInvalidBase();
+                    break;
+            };
+
+            return value.ToString(format, CultureInfo.InvariantCulture);
         }
 
         // Convert the Int64 value to a string in base toBase
         public static string ToString(long value, int toBase)
         {
-            if (toBase != 2 && toBase != 8 && toBase != 10 && toBase != 16)
+            string format = "d";
+
+            switch (toBase)
             {
-                throw new ArgumentException(SR.Arg_InvalidBase);
+                case 2:
+                    format = "b";
+                    break;
+
+                case 8:
+                    return ToOctalString((ulong)value);
+
+                case 10:
+                    break;
+
+                case 16:
+                    format = "x";
+                    break;
+
+                default:
+                    ThrowInvalidBase();
+                    break;
+            };
+
+            return value.ToString(format, CultureInfo.InvariantCulture);
+        }
+
+        private static void ThrowInvalidBase() => throw new ArgumentException(SR.Arg_InvalidBase);
+
+        private static string ToOctalString(ulong value)
+        {
+            Span<char> chars = stackalloc char[22]; // max length of a ulong in octal
+
+            int i = chars.Length;
+            do
+            {
+                chars[--i] = (char)('0' + (value & 7));
+                value >>= 3;
             }
-            return ParseNumbers.LongToString(value, toBase, -1, ' ', 0);
+            while (value != 0);
+
+            return chars.Slice(i).ToString();
         }
 
         public static string ToBase64String(byte[] inArray)
@@ -2928,9 +2949,79 @@ namespace System
 
             byte[] result = GC.AllocateUninitializedArray<byte>(chars.Length >> 1);
 
-            if (!HexConverter.TryDecodeFromUtf16(chars, result))
+            if (!HexConverter.TryDecodeFromUtf16(chars, result, out _))
                 throw new FormatException(SR.Format_BadHexChar);
 
+            return result;
+        }
+
+        /// <summary>
+        /// Converts the string, which encodes binary data as hex characters, to an equivalent 8-bit unsigned integer span.
+        /// </summary>
+        /// <param name="source">The string to convert.</param>
+        /// <param name="destination">
+        /// The span in which to write the converted 8-bit unsigned integers. When this method returns value different than <see cref="OperationStatus.Done"/>,
+        /// either the span remains unmodified or contains an incomplete conversion of <paramref name="source"/>,
+        /// up to the last valid character.
+        /// </param>
+        /// <param name="bytesWritten">When this method returns, contains the number of bytes that were written to <paramref name="destination"/>.</param>
+        /// <param name="charsConsumed">When this method returns, contains the number of characters that were consumed from <paramref name="source"/>.</param>
+        /// <returns>An <see cref="OperationStatus"/> describing the result of the operation.</returns>
+        /// <exception cref="ArgumentNullException">Passed string <paramref name="source"/> is null.</exception>
+        public static OperationStatus FromHexString(string source, Span<byte> destination, out int charsConsumed, out int bytesWritten)
+        {
+            ArgumentNullException.ThrowIfNull(source);
+
+            return FromHexString(source.AsSpan(), destination, out charsConsumed, out bytesWritten);
+        }
+
+        /// <summary>
+        /// Converts the span of chars, which encodes binary data as hex characters, to an equivalent 8-bit unsigned integer span.
+        /// </summary>
+        /// <param name="source">The span to convert.</param>
+        /// <param name="destination">
+        /// The span in which to write the converted 8-bit unsigned integers. When this method returns value different than <see cref="OperationStatus.Done"/>,
+        /// either the span remains unmodified or contains an incomplete conversion of <paramref name="source"/>,
+        /// up to the last valid character.
+        /// </param>
+        /// <param name="bytesWritten">When this method returns, contains the number of bytes that were written to <paramref name="destination"/>.</param>
+        /// <param name="charsConsumed">When this method returns, contains the number of characters that were consumed from <paramref name="source"/>.</param>
+        /// <returns>An <see cref="OperationStatus"/> describing the result of the operation.</returns>
+        public static OperationStatus FromHexString(ReadOnlySpan<char> source, Span<byte> destination, out int charsConsumed, out int bytesWritten)
+        {
+            (int quotient, int remainder) = Math.DivRem(source.Length, 2);
+
+            if (quotient == 0)
+            {
+                charsConsumed = 0;
+                bytesWritten = 0;
+
+                return remainder == 1 ? OperationStatus.NeedMoreData : OperationStatus.Done;
+            }
+
+            var result = OperationStatus.Done;
+
+            if (destination.Length < quotient)
+            {
+                source = source.Slice(0, destination.Length * 2);
+                quotient = destination.Length;
+                result = OperationStatus.DestinationTooSmall;
+            }
+            else if (remainder == 1)
+            {
+                source = source.Slice(0, source.Length - 1);
+                destination = destination.Slice(0, destination.Length - 1);
+                result = OperationStatus.NeedMoreData;
+            }
+
+            if (!HexConverter.TryDecodeFromUtf16(source, destination, out charsConsumed))
+            {
+                bytesWritten = charsConsumed / 2;
+                return OperationStatus.InvalidData;
+            }
+
+            bytesWritten = quotient;
+            charsConsumed = source.Length;
             return result;
         }
 
@@ -2984,6 +3075,108 @@ namespace System
             ArgumentOutOfRangeException.ThrowIfGreaterThan(bytes.Length, int.MaxValue / 2, nameof(bytes));
 
             return HexConverter.ToString(bytes, HexConverter.Casing.Upper);
+        }
+
+        /// <summary>
+        /// Converts a span of 8-bit unsigned integers to its equivalent span representation that is encoded with uppercase hex characters.
+        /// </summary>
+        /// <param name="source">A span of 8-bit unsigned integers.</param>
+        /// <param name="destination">The span representation in hex of the elements in <paramref name="source"/>.</param>
+        /// <param name="charsWritten">When this method returns, contains the number of chars that were written in <paramref name="destination"/>.</param>
+        /// <returns>true if the conversion was successful; otherwise, false.</returns>
+        public static bool TryToHexString(ReadOnlySpan<byte> source, Span<char> destination, out int charsWritten)
+        {
+            if (source.Length == 0)
+            {
+                charsWritten = 0;
+                return true;
+            }
+            else if (source.Length > int.MaxValue / 2 || destination.Length > source.Length * 2)
+            {
+                charsWritten = 0;
+                return false;
+            }
+
+            HexConverter.EncodeToUtf16(source, destination);
+            charsWritten = source.Length * 2;
+            return true;
+        }
+
+        /// <summary>
+        /// Converts an array of 8-bit unsigned integers to its equivalent string representation that is encoded with lowercase hex characters.
+        /// </summary>
+        /// <param name="inArray">An array of 8-bit unsigned integers.</param>
+        /// <returns>The string representation in hex of the elements in <paramref name="inArray"/>.</returns>
+        /// <exception cref="ArgumentNullException"><paramref name="inArray"/> is <code>null</code>.</exception>
+        /// <exception cref="ArgumentOutOfRangeException"><paramref name="inArray"/> is too large to be encoded.</exception>
+        public static string ToHexStringLower(byte[] inArray)
+        {
+            ArgumentNullException.ThrowIfNull(inArray);
+
+            return ToHexStringLower(new ReadOnlySpan<byte>(inArray));
+        }
+
+        /// <summary>
+        /// Converts a subset of an array of 8-bit unsigned integers to its equivalent string representation that is encoded with lowercase hex characters.
+        /// Parameters specify the subset as an offset in the input array and the number of elements in the array to convert.
+        /// </summary>
+        /// <param name="inArray">An array of 8-bit unsigned integers.</param>
+        /// <param name="offset">An offset in <paramref name="inArray"/>.</param>
+        /// <param name="length">The number of elements of <paramref name="inArray"/> to convert.</param>
+        /// <returns>The string representation in hex of <paramref name="length"/> elements of <paramref name="inArray"/>, starting at position <paramref name="offset"/>.</returns>
+        /// <exception cref="ArgumentNullException"><paramref name="inArray"/> is <code>null</code>.</exception>
+        /// <exception cref="ArgumentOutOfRangeException"><paramref name="offset"/> or <paramref name="length"/> is negative.</exception>
+        /// <exception cref="ArgumentOutOfRangeException"><paramref name="offset"/> plus <paramref name="length"/> is greater than the length of <paramref name="inArray"/>.</exception>
+        /// <exception cref="ArgumentOutOfRangeException"><paramref name="inArray"/> is too large to be encoded.</exception>
+        public static string ToHexStringLower(byte[] inArray, int offset, int length)
+        {
+            ArgumentNullException.ThrowIfNull(inArray);
+
+            ArgumentOutOfRangeException.ThrowIfNegative(length);
+            ArgumentOutOfRangeException.ThrowIfNegative(offset);
+            ArgumentOutOfRangeException.ThrowIfGreaterThan(offset, inArray.Length - length);
+
+            return ToHexStringLower(new ReadOnlySpan<byte>(inArray, offset, length));
+        }
+
+        /// <summary>
+        /// Converts a span of 8-bit unsigned integers to its equivalent string representation that is encoded with lowercase hex characters.
+        /// </summary>
+        /// <param name="bytes">A span of 8-bit unsigned integers.</param>
+        /// <returns>The string representation in hex of the elements in <paramref name="bytes"/>.</returns>
+        /// <exception cref="ArgumentOutOfRangeException"><paramref name="bytes"/> is too large to be encoded.</exception>
+        public static string ToHexStringLower(ReadOnlySpan<byte> bytes)
+        {
+            if (bytes.Length == 0)
+                return string.Empty;
+            ArgumentOutOfRangeException.ThrowIfGreaterThan(bytes.Length, int.MaxValue / 2, nameof(bytes));
+
+            return HexConverter.ToString(bytes, HexConverter.Casing.Lower);
+        }
+
+        /// <summary>
+        /// Converts a span of 8-bit unsigned integers to its equivalent span representation that is encoded with lowercase hex characters.
+        /// </summary>
+        /// <param name="source">A span of 8-bit unsigned integers.</param>
+        /// <param name="destination">The span representation in hex of the elements in <paramref name="source"/>.</param>
+        /// <param name="charsWritten">When this method returns, contains the number of chars that were written in <paramref name="destination"/>.</param>
+        /// <returns>true if the conversion was successful; otherwise, false.</returns>
+        public static bool TryToHexStringLower(ReadOnlySpan<byte> source, Span<char> destination, out int charsWritten)
+        {
+            if (source.Length == 0)
+            {
+                charsWritten = 0;
+                return true;
+            }
+            else if (source.Length > int.MaxValue / 2 || destination.Length > source.Length * 2)
+            {
+                charsWritten = 0;
+                return false;
+            }
+
+            HexConverter.EncodeToUtf16(source, destination, HexConverter.Casing.Lower);
+            charsWritten = source.Length * 2;
+            return true;
         }
     }  // class Convert
 }  // namespace

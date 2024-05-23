@@ -68,17 +68,17 @@ REGALIAS(EDI, RDI)
 
 #ifdef TARGET_AMD64
 #define XMMBASE 16
-#define XMMMASK(x) ((__int64)(1) << ((x)+XMMBASE))
+#define XMMMASK(x) ((int64_t)(1) << ((x)+XMMBASE))
 
 #define KBASE 48
-#define KMASK(x) ((__int64)(1) << ((x)+KBASE))
+#define KMASK(x) ((int64_t)(1) << ((x)+KBASE))
 
 #else // !TARGET_AMD64
 #define XMMBASE 8
-#define XMMMASK(x) ((__int32)(1) << ((x)+XMMBASE))
+#define XMMMASK(x) ((int32_t)(1) << ((x)+XMMBASE))
 
 #define KBASE 16
-#define KMASK(x) ((__int32)(1) << ((x)+KBASE))
+#define KMASK(x) ((int32_t)(1) << ((x)+KBASE))
 
 
 #endif // !TARGET_AMD64
@@ -141,6 +141,9 @@ REGDEF(STK,    8+KBASE,    0x0000,       "STK"  )
 
 #elif defined(TARGET_LOONGARCH64)
  #include "registerloongarch64.h"
+
+#elif defined(TARGET_RISCV64)
+ #include "registerriscv64.h"
 
 #else
   #error Unsupported or unset target architecture

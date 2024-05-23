@@ -3,11 +3,12 @@
 
 using System;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Net.Security;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.Marshalling;
-using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using Microsoft.Win32.SafeHandles;
@@ -262,10 +263,10 @@ internal static partial class Interop
             }
         }
 
-        internal static bool AddExtraChainCertificates(SafeSslHandle ssl, ReadOnlySpan<X509Certificate2> chain)
+        internal static bool AddExtraChainCertificates(SafeSslHandle ssl, ReadOnlyCollection<X509Certificate2> chain)
         {
             // send pre-computed list of intermediates.
-            for (int i = 0; i < chain.Length; i++)
+            for (int i = 0; i < chain.Count; i++)
             {
                 SafeX509Handle dupCertHandle = Crypto.X509UpRef(chain[i].Handle);
                 Crypto.CheckValidOpenSslHandle(dupCertHandle);
@@ -419,12 +420,6 @@ namespace Microsoft.Win32.SafeHandles
                 _writeBio?.Dispose();
             }
 
-            if (AlpnHandle.IsAllocated)
-            {
-                Interop.Ssl.SslSetData(handle, IntPtr.Zero);
-                AlpnHandle.Free();
-            }
-
             base.Dispose(disposing);
         }
 
@@ -436,6 +431,12 @@ namespace Microsoft.Win32.SafeHandles
             }
 
             SslContextHandle?.DangerousRelease();
+
+            if (AlpnHandle.IsAllocated)
+            {
+                Interop.Ssl.SslSetData(handle, IntPtr.Zero);
+                AlpnHandle.Free();
+            }
 
             IntPtr h = handle;
             SetHandle(IntPtr.Zero);

@@ -18,6 +18,12 @@ bool interceptor_ICJI::isIntrinsic(
     return original_ICorJitInfo->isIntrinsic(ftn);
 }
 
+bool interceptor_ICJI::notifyMethodInfoUsage(
+          CORINFO_METHOD_HANDLE ftn)
+{
+    return original_ICorJitInfo->notifyMethodInfoUsage(ftn);
+}
+
 uint32_t interceptor_ICJI::getMethodAttribs(
           CORINFO_METHOD_HANDLE ftn)
 {
@@ -41,9 +47,17 @@ void interceptor_ICJI::getMethodSig(
 
 bool interceptor_ICJI::getMethodInfo(
           CORINFO_METHOD_HANDLE ftn,
-          CORINFO_METHOD_INFO* info)
+          CORINFO_METHOD_INFO* info,
+          CORINFO_CONTEXT_HANDLE context)
 {
-    return original_ICorJitInfo->getMethodInfo(ftn, info);
+    return original_ICorJitInfo->getMethodInfo(ftn, info, context);
+}
+
+bool interceptor_ICJI::haveSameMethodDefinition(
+          CORINFO_METHOD_HANDLE meth1Hnd,
+          CORINFO_METHOD_HANDLE meth2Hnd)
+{
+    return original_ICorJitInfo->haveSameMethodDefinition(meth1Hnd, meth2Hnd);
 }
 
 CorInfoInline interceptor_ICJI::canInline(
@@ -102,12 +116,6 @@ CORINFO_CLASS_HANDLE interceptor_ICJI::getMethodClass(
     return original_ICorJitInfo->getMethodClass(method);
 }
 
-CORINFO_MODULE_HANDLE interceptor_ICJI::getMethodModule(
-          CORINFO_METHOD_HANDLE method)
-{
-    return original_ICorJitInfo->getMethodModule(method);
-}
-
 void interceptor_ICJI::getMethodVTableOffset(
           CORINFO_METHOD_HANDLE method,
           unsigned* offsetOfIndirection,
@@ -144,9 +152,10 @@ CORINFO_CLASS_HANDLE interceptor_ICJI::getDefaultEqualityComparerClass(
 
 void interceptor_ICJI::expandRawHandleIntrinsic(
           CORINFO_RESOLVED_TOKEN* pResolvedToken,
+          CORINFO_METHOD_HANDLE callerHandle,
           CORINFO_GENERICHANDLE_RESULT* pResult)
 {
-    original_ICorJitInfo->expandRawHandleIntrinsic(pResolvedToken, pResult);
+    original_ICorJitInfo->expandRawHandleIntrinsic(pResolvedToken, callerHandle, pResult);
 }
 
 bool interceptor_ICJI::isIntrinsicType(
@@ -175,16 +184,6 @@ bool interceptor_ICJI::satisfiesMethodConstraints(
           CORINFO_METHOD_HANDLE method)
 {
     return original_ICorJitInfo->satisfiesMethodConstraints(parent, method);
-}
-
-bool interceptor_ICJI::isCompatibleDelegate(
-          CORINFO_CLASS_HANDLE objCls,
-          CORINFO_CLASS_HANDLE methodParentCls,
-          CORINFO_METHOD_HANDLE method,
-          CORINFO_CLASS_HANDLE delegateCls,
-          bool* pfIsOpenDelegate)
-{
-    return original_ICorJitInfo->isCompatibleDelegate(objCls, methodParentCls, method, delegateCls, pfIsOpenDelegate);
 }
 
 void interceptor_ICJI::methodMustBeLoadedBeforeCodeIsRun(
@@ -224,12 +223,6 @@ void interceptor_ICJI::resolveToken(
     original_ICorJitInfo->resolveToken(pResolvedToken);
 }
 
-bool interceptor_ICJI::tryResolveToken(
-          CORINFO_RESOLVED_TOKEN* pResolvedToken)
-{
-    return original_ICorJitInfo->tryResolveToken(pResolvedToken);
-}
-
 void interceptor_ICJI::findSig(
           CORINFO_MODULE_HANDLE module,
           unsigned sigTOK,
@@ -252,20 +245,6 @@ CORINFO_CLASS_HANDLE interceptor_ICJI::getTokenTypeAsHandle(
           CORINFO_RESOLVED_TOKEN* pResolvedToken)
 {
     return original_ICorJitInfo->getTokenTypeAsHandle(pResolvedToken);
-}
-
-bool interceptor_ICJI::isValidToken(
-          CORINFO_MODULE_HANDLE module,
-          unsigned metaTOK)
-{
-    return original_ICorJitInfo->isValidToken(module, metaTOK);
-}
-
-bool interceptor_ICJI::isValidStringRef(
-          CORINFO_MODULE_HANDLE module,
-          unsigned metaTOK)
-{
-    return original_ICorJitInfo->isValidStringRef(module, metaTOK);
 }
 
 int interceptor_ICJI::getStringLiteral(
@@ -322,13 +301,6 @@ bool interceptor_ICJI::isValueClass(
     return original_ICorJitInfo->isValueClass(cls);
 }
 
-CorInfoInlineTypeCheck interceptor_ICJI::canInlineTypeCheck(
-          CORINFO_CLASS_HANDLE cls,
-          CorInfoInlineTypeCheckSource source)
-{
-    return original_ICorJitInfo->canInlineTypeCheck(cls, source);
-}
-
 uint32_t interceptor_ICJI::getClassAttribs(
           CORINFO_CLASS_HANDLE cls)
 {
@@ -371,6 +343,22 @@ size_t interceptor_ICJI::getClassModuleIdForStatics(
           void** ppIndirection)
 {
     return original_ICorJitInfo->getClassModuleIdForStatics(cls, pModule, ppIndirection);
+}
+
+bool interceptor_ICJI::getIsClassInitedFlagAddress(
+          CORINFO_CLASS_HANDLE cls,
+          CORINFO_CONST_LOOKUP* addr,
+          int* offset)
+{
+    return original_ICorJitInfo->getIsClassInitedFlagAddress(cls, addr, offset);
+}
+
+bool interceptor_ICJI::getStaticBaseAddress(
+          CORINFO_CLASS_HANDLE cls,
+          bool isGc,
+          CORINFO_CONST_LOOKUP* addr)
+{
+    return original_ICorJitInfo->getStaticBaseAddress(cls, isGc, addr);
 }
 
 unsigned interceptor_ICJI::getClassSize(
@@ -418,6 +406,14 @@ CORINFO_FIELD_HANDLE interceptor_ICJI::getFieldInClass(
     return original_ICorJitInfo->getFieldInClass(clsHnd, num);
 }
 
+GetTypeLayoutResult interceptor_ICJI::getTypeLayout(
+          CORINFO_CLASS_HANDLE typeHnd,
+          CORINFO_TYPE_LAYOUT_NODE* treeNodes,
+          size_t* numTreeNodes)
+{
+    return original_ICorJitInfo->getTypeLayout(typeHnd, treeNodes, numTreeNodes);
+}
+
 bool interceptor_ICJI::checkMethodModifier(
           CORINFO_METHOD_HANDLE hMethod,
           const char* modifier,
@@ -427,11 +423,10 @@ bool interceptor_ICJI::checkMethodModifier(
 }
 
 CorInfoHelpFunc interceptor_ICJI::getNewHelper(
-          CORINFO_RESOLVED_TOKEN* pResolvedToken,
-          CORINFO_METHOD_HANDLE callerHandle,
+          CORINFO_CLASS_HANDLE classHandle,
           bool* pHasSideEffects)
 {
-    return original_ICorJitInfo->getNewHelper(pResolvedToken, callerHandle, pHasSideEffects);
+    return original_ICorJitInfo->getNewHelper(classHandle, pHasSideEffects);
 }
 
 CorInfoHelpFunc interceptor_ICJI::getNewArrHelper(
@@ -501,18 +496,20 @@ bool interceptor_ICJI::getReadyToRunHelper(
           CORINFO_RESOLVED_TOKEN* pResolvedToken,
           CORINFO_LOOKUP_KIND* pGenericLookupKind,
           CorInfoHelpFunc id,
+          CORINFO_METHOD_HANDLE callerHandle,
           CORINFO_CONST_LOOKUP* pLookup)
 {
-    return original_ICorJitInfo->getReadyToRunHelper(pResolvedToken, pGenericLookupKind, id, pLookup);
+    return original_ICorJitInfo->getReadyToRunHelper(pResolvedToken, pGenericLookupKind, id, callerHandle, pLookup);
 }
 
 void interceptor_ICJI::getReadyToRunDelegateCtorHelper(
           CORINFO_RESOLVED_TOKEN* pTargetMethod,
           mdToken targetConstraint,
           CORINFO_CLASS_HANDLE delegateType,
+          CORINFO_METHOD_HANDLE callerHandle,
           CORINFO_LOOKUP* pLookup)
 {
-    original_ICorJitInfo->getReadyToRunDelegateCtorHelper(pTargetMethod, targetConstraint, delegateType, pLookup);
+    original_ICorJitInfo->getReadyToRunDelegateCtorHelper(pTargetMethod, targetConstraint, delegateType, callerHandle, pLookup);
 }
 
 CorInfoInitClassResult interceptor_ICJI::initClass(
@@ -554,13 +551,6 @@ bool interceptor_ICJI::canCast(
     return original_ICorJitInfo->canCast(child, parent);
 }
 
-bool interceptor_ICJI::areTypesEquivalent(
-          CORINFO_CLASS_HANDLE cls1,
-          CORINFO_CLASS_HANDLE cls2)
-{
-    return original_ICorJitInfo->areTypesEquivalent(cls1, cls2);
-}
-
 TypeCompareState interceptor_ICJI::compareTypesForCast(
           CORINFO_CLASS_HANDLE fromClass,
           CORINFO_CLASS_HANDLE toClass)
@@ -575,18 +565,23 @@ TypeCompareState interceptor_ICJI::compareTypesForEquality(
     return original_ICorJitInfo->compareTypesForEquality(cls1, cls2);
 }
 
-CORINFO_CLASS_HANDLE interceptor_ICJI::mergeClasses(
-          CORINFO_CLASS_HANDLE cls1,
-          CORINFO_CLASS_HANDLE cls2)
-{
-    return original_ICorJitInfo->mergeClasses(cls1, cls2);
-}
-
 bool interceptor_ICJI::isMoreSpecificType(
           CORINFO_CLASS_HANDLE cls1,
           CORINFO_CLASS_HANDLE cls2)
 {
     return original_ICorJitInfo->isMoreSpecificType(cls1, cls2);
+}
+
+bool interceptor_ICJI::isExactType(
+          CORINFO_CLASS_HANDLE cls)
+{
+    return original_ICorJitInfo->isExactType(cls);
+}
+
+TypeCompareState interceptor_ICJI::isNullableType(
+          CORINFO_CLASS_HANDLE cls)
+{
+    return original_ICorJitInfo->isNullableType(cls);
 }
 
 TypeCompareState interceptor_ICJI::isEnum(
@@ -607,12 +602,6 @@ CorInfoType interceptor_ICJI::getChildType(
           CORINFO_CLASS_HANDLE* clsRet)
 {
     return original_ICorJitInfo->getChildType(clsHnd, clsRet);
-}
-
-bool interceptor_ICJI::satisfiesClassConstraints(
-          CORINFO_CLASS_HANDLE cls)
-{
-    return original_ICorJitInfo->satisfiesClassConstraints(cls);
 }
 
 bool interceptor_ICJI::isSDArray(
@@ -686,6 +675,26 @@ void interceptor_ICJI::getFieldInfo(
     original_ICorJitInfo->getFieldInfo(pResolvedToken, callerHandle, flags, pResult);
 }
 
+uint32_t interceptor_ICJI::getThreadLocalFieldInfo(
+          CORINFO_FIELD_HANDLE field,
+          bool isGCtype)
+{
+    return original_ICorJitInfo->getThreadLocalFieldInfo(field, isGCtype);
+}
+
+void interceptor_ICJI::getThreadLocalStaticBlocksInfo(
+          CORINFO_THREAD_STATIC_BLOCKS_INFO* pInfo,
+          bool isGCType)
+{
+    original_ICorJitInfo->getThreadLocalStaticBlocksInfo(pInfo, isGCType);
+}
+
+void interceptor_ICJI::getThreadLocalStaticInfo_NativeAOT(
+          CORINFO_THREAD_STATIC_INFO_NATIVEAOT* pInfo)
+{
+    original_ICorJitInfo->getThreadLocalStaticInfo_NativeAOT(pInfo);
+}
+
 bool interceptor_ICJI::isFieldStatic(
           CORINFO_FIELD_HANDLE fldHnd)
 {
@@ -741,6 +750,14 @@ void interceptor_ICJI::reportRichMappings(
     original_ICorJitInfo->reportRichMappings(inlineTreeNodes, numInlineTreeNodes, mappings, numMappings);
 }
 
+void interceptor_ICJI::reportMetadata(
+          const char* key,
+          const void* value,
+          size_t length)
+{
+    original_ICorJitInfo->reportMetadata(key, value, length);
+}
+
 void* interceptor_ICJI::allocateArray(
           size_t cBytes)
 {
@@ -786,37 +803,6 @@ CorInfoHFAElemType interceptor_ICJI::getHFAType(
           CORINFO_CLASS_HANDLE hClass)
 {
     return original_ICorJitInfo->getHFAType(hClass);
-}
-
-JITINTERFACE_HRESULT interceptor_ICJI::GetErrorHRESULT(
-          struct _EXCEPTION_POINTERS* pExceptionPointers)
-{
-    return original_ICorJitInfo->GetErrorHRESULT(pExceptionPointers);
-}
-
-uint32_t interceptor_ICJI::GetErrorMessage(
-          char16_t* buffer,
-          uint32_t bufferLength)
-{
-    return original_ICorJitInfo->GetErrorMessage(buffer, bufferLength);
-}
-
-int interceptor_ICJI::FilterException(
-          struct _EXCEPTION_POINTERS* pExceptionPointers)
-{
-    return original_ICorJitInfo->FilterException(pExceptionPointers);
-}
-
-void interceptor_ICJI::ThrowExceptionForJitResult(
-          JITINTERFACE_HRESULT result)
-{
-    original_ICorJitInfo->ThrowExceptionForJitResult(result);
-}
-
-void interceptor_ICJI::ThrowExceptionForHelper(
-          const CORINFO_HELPER_DESC* throwHelper)
-{
-    original_ICorJitInfo->ThrowExceptionForHelper(throwHelper);
 }
 
 bool interceptor_ICJI::runWithErrorTrap(
@@ -874,20 +860,18 @@ unsigned interceptor_ICJI::getMethodHash(
     return original_ICorJitInfo->getMethodHash(ftn);
 }
 
-size_t interceptor_ICJI::findNameOfToken(
-          CORINFO_MODULE_HANDLE moduleHandle,
-          mdToken token,
-          char* szFQName,
-          size_t FQNameCapacity)
-{
-    return original_ICorJitInfo->findNameOfToken(moduleHandle, token, szFQName, FQNameCapacity);
-}
-
 bool interceptor_ICJI::getSystemVAmd64PassStructInRegisterDescriptor(
           CORINFO_CLASS_HANDLE structHnd,
           SYSTEMV_AMD64_CORINFO_STRUCT_REG_PASSING_DESCRIPTOR* structPassInRegDescPtr)
 {
     return original_ICorJitInfo->getSystemVAmd64PassStructInRegisterDescriptor(structHnd, structPassInRegDescPtr);
+}
+
+void interceptor_ICJI::getSwiftLowering(
+          CORINFO_CLASS_HANDLE structHnd,
+          CORINFO_SWIFT_LOWERING* pLowering)
+{
+    original_ICorJitInfo->getSwiftLowering(structHnd, pLowering);
 }
 
 uint32_t interceptor_ICJI::getLoongArch64PassStructInRegisterFlags(
@@ -896,16 +880,16 @@ uint32_t interceptor_ICJI::getLoongArch64PassStructInRegisterFlags(
     return original_ICorJitInfo->getLoongArch64PassStructInRegisterFlags(structHnd);
 }
 
+uint32_t interceptor_ICJI::getRISCV64PassStructInRegisterFlags(
+          CORINFO_CLASS_HANDLE structHnd)
+{
+    return original_ICorJitInfo->getRISCV64PassStructInRegisterFlags(structHnd);
+}
+
 uint32_t interceptor_ICJI::getThreadTLSIndex(
           void** ppIndirection)
 {
     return original_ICorJitInfo->getThreadTLSIndex(ppIndirection);
-}
-
-const void* interceptor_ICJI::getInlinedCallFrameVptr(
-          void** ppIndirection)
-{
-    return original_ICorJitInfo->getInlinedCallFrameVptr(ppIndirection);
 }
 
 int32_t* interceptor_ICJI::getAddrOfCaptureThreadGlobal(
@@ -981,9 +965,10 @@ CORINFO_FIELD_HANDLE interceptor_ICJI::embedFieldHandle(
 void interceptor_ICJI::embedGenericHandle(
           CORINFO_RESOLVED_TOKEN* pResolvedToken,
           bool fEmbedParent,
+          CORINFO_METHOD_HANDLE callerHandle,
           CORINFO_GENERICHANDLE_RESULT* pResult)
 {
-    original_ICorJitInfo->embedGenericHandle(pResolvedToken, fEmbedParent, pResult);
+    original_ICorJitInfo->embedGenericHandle(pResolvedToken, fEmbedParent, callerHandle, pResult);
 }
 
 void interceptor_ICJI::getLocationOfThisType(
@@ -1038,19 +1023,6 @@ void interceptor_ICJI::getCallInfo(
     original_ICorJitInfo->getCallInfo(pResolvedToken, pConstrainedResolvedToken, callerHandle, flags, pResult);
 }
 
-bool interceptor_ICJI::canAccessFamily(
-          CORINFO_METHOD_HANDLE hCaller,
-          CORINFO_CLASS_HANDLE hInstanceType)
-{
-    return original_ICorJitInfo->canAccessFamily(hCaller, hInstanceType);
-}
-
-bool interceptor_ICJI::isRIDClassDomainID(
-          CORINFO_CLASS_HANDLE cls)
-{
-    return original_ICorJitInfo->isRIDClassDomainID(cls);
-}
-
 unsigned interceptor_ICJI::getClassDomainID(
           CORINFO_CLASS_HANDLE cls,
           void** ppIndirection)
@@ -1058,14 +1030,23 @@ unsigned interceptor_ICJI::getClassDomainID(
     return original_ICorJitInfo->getClassDomainID(cls, ppIndirection);
 }
 
-bool interceptor_ICJI::getReadonlyStaticFieldValue(
+bool interceptor_ICJI::getStaticFieldContent(
           CORINFO_FIELD_HANDLE field,
           uint8_t* buffer,
           int bufferSize,
           int valueOffset,
           bool ignoreMovableObjects)
 {
-    return original_ICorJitInfo->getReadonlyStaticFieldValue(field, buffer, bufferSize, valueOffset, ignoreMovableObjects);
+    return original_ICorJitInfo->getStaticFieldContent(field, buffer, bufferSize, valueOffset, ignoreMovableObjects);
+}
+
+bool interceptor_ICJI::getObjectContent(
+          CORINFO_OBJECT_HANDLE obj,
+          uint8_t* buffer,
+          int bufferSize,
+          int valueOffset)
+{
+    return original_ICorJitInfo->getObjectContent(obj, buffer, bufferSize, valueOffset);
 }
 
 CORINFO_CLASS_HANDLE interceptor_ICJI::getStaticFieldCurrentClass(
@@ -1225,9 +1206,10 @@ JITINTERFACE_HRESULT interceptor_ICJI::getPgoInstrumentationResults(
           ICorJitInfo::PgoInstrumentationSchema** pSchema,
           uint32_t* pCountSchemaItems,
           uint8_t** pInstrumentationData,
-          ICorJitInfo::PgoSource* pgoSource)
+          ICorJitInfo::PgoSource* pPgoSource,
+          bool* pDynamicPgo)
 {
-    return original_ICorJitInfo->getPgoInstrumentationResults(ftnHnd, pSchema, pCountSchemaItems, pInstrumentationData, pgoSource);
+    return original_ICorJitInfo->getPgoInstrumentationResults(ftnHnd, pSchema, pCountSchemaItems, pInstrumentationData, pPgoSource, pDynamicPgo);
 }
 
 JITINTERFACE_HRESULT interceptor_ICJI::allocPgoInstrumentationBySchema(
@@ -1252,10 +1234,9 @@ void interceptor_ICJI::recordRelocation(
           void* locationRW,
           void* target,
           uint16_t fRelocType,
-          uint16_t slotNum,
           int32_t addlDelta)
 {
-    original_ICorJitInfo->recordRelocation(location, locationRW, target, fRelocType, slotNum, addlDelta);
+    original_ICorJitInfo->recordRelocation(location, locationRW, target, fRelocType, addlDelta);
 }
 
 uint16_t interceptor_ICJI::getRelocTypeHint(

@@ -3,7 +3,12 @@
 
 using System;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.ComponentModel;
+using System.Globalization;
 using System.Linq;
+using System.Net;
+using System.Text.Json;
 using Microsoft.Extensions.Configuration;
 using Xunit;
 
@@ -33,6 +38,15 @@ namespace Microsoft.Extensions
         public class GenericOptions<T>
         {
             public T Value { get; set; }
+        }
+
+        public record GenericOptionsRecord<T>(T Value);
+
+        public class GenericOptionsWithParamCtor<T>
+        {
+            public GenericOptionsWithParamCtor(T value) => Value = value;
+
+            public T Value { get; }
         }
 
         public class OptionsWithNesting
@@ -98,21 +112,57 @@ namespace Microsoft.Extensions
 
         public record RecordWhereParametersHaveDefaultValue(string Name, string Address, int Age = 42);
 
-        public record ClassWhereParametersHaveDefaultValue
+        public class ClassWhereParametersHaveDefaultValue
         {
             public string? Name { get; }
             public string Address { get; }
             public int Age { get; }
+            public float F { get; }
+            public double D { get; }
+            public decimal M { get; }
+            public StringComparison SC { get; }
+            public char C { get; }
+            public int? NAge { get; }
+            public float? NF { get; }
+            public double? ND { get; }
+            public decimal? NM { get; }
+            public StringComparison? NSC { get; }
+            public char? NC { get; }
 
-            public ClassWhereParametersHaveDefaultValue(string? name, string address, int age = 42)
+            public ClassWhereParametersHaveDefaultValue(string? name = "John Doe", string address = "1 Microsoft Way",
+                int age = 42, float f = 42.0f, double d = 3.14159, decimal m = 3.1415926535897932384626433M, StringComparison sc = StringComparison.Ordinal, char c = 'q',
+                int? nage = 42, float? nf = 42.0f, double? nd = 3.14159, decimal? nm = 3.1415926535897932384626433M, StringComparison? nsc = StringComparison.Ordinal, char? nc = 'q')
             {
                 Name = name;
                 Address = address;
                 Age = age;
+                F = f;
+                D = d;
+                M = m;
+                SC = sc;
+                C = c;
+                NAge = nage;
+                NF = nf;
+                ND = nd;
+                NM = nm;
+                NSC = nsc;
+                NC = nc;
             }
         }
 
+        public class ClassWithPrimaryCtor(string color, int length)
+        {
+            public string Color { get; } = color;
+            public int Length { get; } = length;
+        }
 
+        public class ClassWithPrimaryCtorDefaultValues(string color = "blue", int length = 15, decimal height = 5.946238490567943927384M, EditorBrowsableState eb = EditorBrowsableState.Never)
+        {
+            public string Color { get; } = color;
+            public int Length { get; } = length;
+            public decimal Height { get; } = height;
+            public EditorBrowsableState EB { get;} = eb;
+        }
         public record RecordTypeOptions(string Color, int Length);
 
         public record Line(string Color, int Length, int Thickness);
@@ -322,7 +372,7 @@ namespace Microsoft.Extensions
                 public Dictionary<string, TestSettingsEnum> Enums { get; set; }
             }
 
-            [Fact]
+            [ConditionalFact(typeof(TestHelpers), nameof(TestHelpers.NotSourceGenMode))] // Ensure exception messages are in sync
             public void WithFlagUnset_NoExceptionIsThrownWhenFailingToParseEnumsInAnArrayAndValidItemsArePreserved()
             {
                 var dic = new Dictionary<string, string>
@@ -345,7 +395,7 @@ namespace Microsoft.Extensions
                 Assert.Equal(TestSettingsEnum.Option2, model.Enums[1]);
             }
 
-            [Fact]
+            [ConditionalFact(typeof(TestHelpers), nameof(TestHelpers.NotSourceGenMode))] // Ensure exception messages are in sync
             public void WithFlagUnset_NoExceptionIsThrownWhenFailingToParseEnumsInADictionaryAndValidItemsArePreserved()
             {
                 var dic = new Dictionary<string, string>
@@ -369,7 +419,7 @@ namespace Microsoft.Extensions
                 Assert.Equal(TestSettingsEnum.Option2, model.Enums["Fourth"]);
             }
 
-            [Fact]
+            [ConditionalFact(typeof(TestHelpers), nameof(TestHelpers.NotSourceGenMode))] // Ensure exception messages are in sync
             public void WithFlagSet_AnExceptionIsThrownWhenFailingToParseEnumsInAnArray()
             {
                 var dic = new Dictionary<string, string>
@@ -392,7 +442,7 @@ namespace Microsoft.Extensions
                     exception.Message);
             }
 
-            [Fact]
+            [ConditionalFact(typeof(TestHelpers), nameof(TestHelpers.NotSourceGenMode))] // Ensure exception messages are in sync
             public void WithFlagSet_AnExceptionIsThrownWhenFailingToParseEnumsInADictionary()
             {
                 var dic = new Dictionary<string, string>
@@ -424,6 +474,10 @@ namespace Microsoft.Extensions
         public class OptionWithCollectionProperties
         {
             private int _otherCode;
+            private int _otherCodeNullable;
+            private string _otherCodeString = "default";
+            private object _otherCodeNull;
+            private Uri _otherCodeUri;
             private ICollection<string> blacklist = new HashSet<string>();
 
             public ICollection<string> Blacklist
@@ -441,11 +495,36 @@ namespace Microsoft.Extensions
             // ParsedBlacklist initialized using the setter of Blacklist.
             public ICollection<string> ParsedBlacklist { get; private set; } = new HashSet<string>();
 
-            // This property not having any match in the configuration. Still the setter need to be called during the binding.
+            // This does not have a match in the configuration, however the setter should be called during the binding:
             public int OtherCode
             {
                 get => _otherCode;
                 set => _otherCode = value == 0 ? 2 : value;
+            }
+
+            // These do not have any match in the configuration, and the setters should not be called during the binding:
+            public int? OtherCodeNullable
+            {
+                get => _otherCodeNullable;
+                set => _otherCodeNullable = !value.HasValue ? 3 : value.Value;
+            }
+
+            public string OtherCodeString
+            {
+                get => _otherCodeString;
+                set => _otherCodeString = value;
+            }
+
+            public object? OtherCodeNull
+            {
+                get => _otherCodeNull;
+                set => _otherCodeNull = value is null ? 4 : value;
+            }
+
+            public Uri OtherCodeUri
+            {
+                get => _otherCodeUri;
+                set => _otherCodeUri = value is null ? new Uri("hello") : value;
             }
         }
 
@@ -526,6 +605,47 @@ namespace Microsoft.Extensions
             }
         }
 
+        public struct StructWithNestedStructAndSetterLogic
+        {
+            private string _string;
+            private int _int32;
+
+            public string String
+            {
+                get => _string;
+                // Setter should not be called for missing values.
+                set { _string = string.IsNullOrEmpty(value) ? "Hello" : value; }
+            }
+
+            public int Int32
+            {
+                get => _int32;
+                set { _int32 = value == 0 ? 42 : value; }
+            }
+
+            public Nested NestedStruct;
+            public Nested[] NestedStructs;
+
+            public struct Nested
+            {
+                private string _string;
+                private int _int32;
+
+                public string String
+                {
+                    get => _string;
+                    // Setter should not be called for missing values.
+                    set { _string = string.IsNullOrEmpty(value) ? "Hello2" : value; }
+                }
+
+                public int Int32
+                {
+                    get => _int32;
+                    set { _int32 = value == 0 ? 43 : value; }
+                }
+            }
+        }
+
         public class BaseClassWithVirtualProperty
         {
             private string? PrivateProperty { get; set; }
@@ -566,5 +686,308 @@ namespace Microsoft.Extensions
 
             public string? ExposeTestVirtualSet() => _testVirtualSet;
         }
+
+        public class ClassWithDirectSelfReference
+        {
+            public string MyString { get; set; }
+            public ClassWithDirectSelfReference MyClass { get; set; }
+        }
+
+        public class ClassWithIndirectSelfReference
+        {
+            public string MyString { get; set; }
+            public List<ClassWithIndirectSelfReference> MyList { get; set; }
+        }
+
+        public class DistributedQueueConfig
+        {
+            public List<QueueNamespaces> Namespaces { get; set; }
+        }
+
+        public class QueueNamespaces
+        {
+            public string Namespace { get; set; }
+
+            public Dictionary<string, QueueProperties>? Queues { get; set; } = new();
+        }
+
+        public class QueueProperties
+        {
+            public DateTimeOffset? CreationDate { get; set; }
+
+            public DateTimeOffset? DequeueOnlyMarkedDate { get; set; } = default(DateTimeOffset);
+        }
+
+        public record RecordWithPrimitives
+        {
+            public bool Prop0 { get; set; }
+            public byte Prop1 { get; set; }
+            public sbyte Prop2 { get; set; }
+            public char Prop3 { get; set; }
+            public double Prop4 { get; set; }
+            public string Prop5 { get; set; }
+            public int Prop6 { get; set; }
+            public short Prop8 { get; set; }
+            public long Prop9 { get; set; }
+            public float Prop10 { get; set; }
+            public ushort Prop13 { get; set; }
+            public uint Prop14 { get; set; }
+            public ulong Prop15 { get; set; }
+            public object Prop16 { get; set; }
+            public CultureInfo Prop17 { get; set; }
+            public DateTime Prop19 { get; set; }
+            public DateTimeOffset Prop20 { get; set; }
+            public decimal Prop21 { get; set; }
+            public TimeSpan Prop23 { get; set; }
+            public Guid Prop24 { get; set; }
+            public Uri Prop25 { get; set; }
+            public Version Prop26 { get; set; }
+            public DayOfWeek Prop27 { get; set; }
+#if NET
+            public Int128 Prop7 { get; set; }
+            public Half Prop11 { get; set; }
+            public UInt128 Prop12 { get; set; }
+            public DateOnly Prop18 { get; set; }
+            public TimeOnly Prop22 { get; set; }
+#endif
+        }
+
+        public class ClassWithParameterlessAndParameterizedCtor
+        {
+            public ClassWithParameterlessAndParameterizedCtor() => MyInt = 1;
+
+            public ClassWithParameterlessAndParameterizedCtor(int myInt) => MyInt = 10;
+
+            public int MyInt { get; }
+        }
+
+        public struct StructWithParameterlessAndParameterizedCtor
+        {
+            public StructWithParameterlessAndParameterizedCtor() => MyInt = 1;
+
+            public StructWithParameterlessAndParameterizedCtor(int myInt) => MyInt = 10;
+
+            public int MyInt { get; }
+        }
+
+        [TypeConverter(typeof(GeolocationTypeConverter))]
+        public struct Geolocation : IGeolocation
+        {
+            public static readonly Geolocation Zero = new(0, 0);
+
+            public Geolocation(double latitude, double longitude)
+            {
+                Latitude = latitude;
+                Longitude = longitude;
+            }
+
+            public double Latitude { get; set; }
+
+            public double Longitude { get; set; }
+
+            private sealed class GeolocationTypeConverter : TypeConverter
+            {
+                public override bool CanConvertFrom(ITypeDescriptorContext? context, Type sourceType) =>
+                    throw new NotImplementedException();
+
+                public override object? ConvertFrom(ITypeDescriptorContext? context, CultureInfo? culture, object value) =>
+                    throw new NotImplementedException();
+            }
+        }
+
+        public sealed class GeolocationClass : IGeolocation
+        {
+            public double Latitude { get; set; }
+            public double Longitude { get; set; }
+        }
+
+        public class GeolocationWrapper
+        {
+            public Geolocation Location { get; set; }
+        }
+
+        public class GraphWithUnsupportedMember
+        {
+            public JsonWriterOptions WriterOptions { get; set; }
+        }
+
+        public record RemoteAuthenticationOptions<TRemoteAuthenticationProviderOptions> where TRemoteAuthenticationProviderOptions : new()
+        {
+            public TRemoteAuthenticationProviderOptions GenericProp { get; } = new();
+            public OidcProviderOptions NonGenericProp { get; } = new();
+
+            public TRemoteAuthenticationProviderOptions _genericField { get; } = new();
+            public OidcProviderOptions _nonGenericField { get; } = new();
+
+            public static TRemoteAuthenticationProviderOptions StaticGenericProp { get; } = new();
+            public static OidcProviderOptions StaticNonGenericProp { get; } = new();
+
+            public static TRemoteAuthenticationProviderOptions s_GenericField = new();
+            public static OidcProviderOptions s_NonGenericField = new();
+
+            public TRemoteAuthenticationProviderOptions? NullGenericProp { get; }
+            public static OidcProviderOptions? s_NullNonGenericField;
+        }
+
+        public record OidcProviderOptions
+        {
+            public string? Authority { get; set; }
+        }
+
+        public class AClass
+        {
+            public EndPointCollection EndPoints { get; init; } = new EndPointCollection();
+
+            public bool Property { get; set; } = false;
+        }
+
+        public sealed class EndPointCollection : Collection<EndPoint>, IEnumerable<EndPoint>
+        {
+            public EndPointCollection() { }
+
+            public void Add(string hostAndPort)
+            {
+                EndPoint? endpoint;
+
+                if (IPAddress.TryParse(hostAndPort, out IPAddress? address))
+                {
+                    endpoint = new IPEndPoint(address, 0);
+                }
+                else
+                {
+                    endpoint = new DnsEndPoint(hostAndPort, 0);
+                }
+
+                Add(endpoint);
+            }
+        }
+
+        internal abstract class AbstractBase
+        {
+            public int Value { get; set; }
+        }
+
+        internal sealed class Derived : AbstractBase { }
+
+        internal sealed class DerivedWithAnotherProp : AbstractBase
+        {
+            public int Value2 { get; set; }
+        }
+        
+        internal class ClassWithAbstractProp
+        {
+            public AbstractBase AbstractProp { get; set; }
+        }
+
+        internal class ClassWithAbstractCtorParam
+        {
+            public AbstractBase AbstractProp { get; }
+
+            public ClassWithAbstractCtorParam(AbstractBase abstractProp) => AbstractProp = abstractProp;
+        }
+
+        internal class ClassWithOptionalAbstractCtorParam
+        {
+            public AbstractBase AbstractProp { get; }
+
+            public ClassWithOptionalAbstractCtorParam(AbstractBase? abstractProp = null) => AbstractProp = abstractProp;
+        }
+
+        internal class ClassWith_DirectlyAssignable_CtorParams
+        {
+            public IConfigurationSection MySection { get; }
+            public object MyObject { get; }
+            public string MyString { get; }
+
+            public ClassWith_DirectlyAssignable_CtorParams(IConfigurationSection mySection, object myObject, string myString) =>
+                (MySection, MyObject, MyString) = (mySection, myObject, myString);
+        }
+
+        public class SharedChildInstance_Class
+        {
+            public string? ConnectionString { get; set; }
+        }
+
+        public class ClassThatThrowsOnSetters
+        {
+            private int _myIntProperty;
+
+            public ClassThatThrowsOnSetters()
+            {
+                _myIntProperty = 42;
+            }
+
+            public int MyIntProperty
+            {
+                get => _myIntProperty;
+                set => throw new InvalidOperationException("Not expected");
+            }
+        }
+
+        public class SimplePoco
+        {
+            public string A { get; set; }
+            public string B { get; set; }
+        }
+
+        public class BaseForHiddenMembers
+        {
+            public string A { get; set; }
+            public string B { get; set; }
+            public TestSettingsEnum E {get; set;}
+
+            public virtual string C { get => CBase; set => CBase = value; }
+
+            public string CBase;
+
+            public virtual string D { get; }
+
+            public virtual string F { get => FBase; set => FBase = value; }
+            public string FBase;
+
+
+            public virtual int X { get => XBase; set => XBase = value; }
+            public int XBase;
+        }
+
+        public enum TestSettingsEnum2
+        {
+            // Note - the reflection binder will try to bind to every member
+            Option1 = TestSettingsEnum.Option1,
+            Option2 = TestSettingsEnum.Option2,
+        }
+
+        public class IntermediateDerivedClass : BaseForHiddenMembers
+        {
+            public new virtual string D { get => DBase; set => DBase = value; }
+            public string DBase;
+
+            public override string F { get => "IF"; }
+
+        }
+
+        public class DerivedClassWithHiddenMembers : IntermediateDerivedClass
+        {
+            public new string A { get; } = "ADerived";
+            public new int B { get; set; }
+            public new TestSettingsEnum2 E
+            {
+                get => (TestSettingsEnum2)base.E;
+                set => base.E = (TestSettingsEnum)value;
+            }
+
+            // only override get
+            public override string C { get => "DC"; }
+
+            // override new only get
+            public override string D { get => "DD"; }
+
+            // two overrides of only get
+            public override string F { get => "DF"; }
+
+            // override only set
+            public override int X { set => base.X = value + 1; }
+        }
+
     }
 }

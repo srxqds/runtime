@@ -22,7 +22,7 @@
  */
 void Compiler::fgMarkUseDef(GenTreeLclVarCommon* tree)
 {
-    assert((tree->OperIsLocal() && (tree->OperGet() != GT_PHI_ARG)) || tree->OperIsLocalAddr());
+    assert((tree->OperIsLocal() && (tree->OperGet() != GT_PHI_ARG)) || tree->OperIs(GT_LCL_ADDR));
 
     const unsigned   lclNum = tree->GetLclNum();
     LclVarDsc* const varDsc = lvaGetDesc(lclNum);
@@ -93,28 +93,23 @@ void Compiler::fgMarkUseDef(GenTreeLclVarCommon* tree)
 
             if (promotionType != PROMOTION_TYPE_NONE)
             {
-                VARSET_TP bitMask(VarSetOps::MakeEmpty(this));
-
                 for (unsigned i = varDsc->lvFieldLclStart; i < varDsc->lvFieldLclStart + varDsc->lvFieldCnt; ++i)
                 {
-                    noway_assert(lvaTable[i].lvIsStructField);
-                    if (lvaTable[i].lvTracked)
+                    if (!lvaTable[i].lvTracked)
                     {
-                        noway_assert(lvaTable[i].lvVarIndex < lvaTrackedCount);
-                        VarSetOps::AddElemD(this, bitMask, lvaTable[i].lvVarIndex);
+                        continue;
                     }
-                }
 
-                // For pure defs (i.e. not an "update" def which is also a use), add to the (all) def set.
-                if (!isUse)
-                {
-                    assert(isDef);
-                    VarSetOps::UnionD(this, fgCurDefSet, bitMask);
-                }
-                else if (!VarSetOps::IsSubset(this, bitMask, fgCurDefSet))
-                {
-                    // Mark as used any struct fields that are not yet defined.
-                    VarSetOps::UnionD(this, fgCurUseSet, bitMask);
+                    unsigned varIndex = lvaTable[i].lvVarIndex;
+                    if (isUse && !VarSetOps::IsMember(this, fgCurDefSet, varIndex))
+                    {
+                        VarSetOps::AddElemD(this, fgCurUseSet, varIndex);
+                    }
+
+                    if (isDef)
+                    {
+                        VarSetOps::AddElemD(this, fgCurDefSet, varIndex);
+                    }
                 }
             }
         }
@@ -214,15 +209,13 @@ void Compiler::fgPerNodeLocalVarLiveness(GenTree* tree)
 
         case GT_LCL_VAR:
         case GT_LCL_FLD:
-        case GT_LCL_VAR_ADDR:
-        case GT_LCL_FLD_ADDR:
+        case GT_LCL_ADDR:
         case GT_STORE_LCL_VAR:
         case GT_STORE_LCL_FLD:
             fgMarkUseDef(tree->AsLclVarCommon());
             break;
 
         case GT_IND:
-        case GT_OBJ:
         case GT_BLK:
             // For Volatile indirection, first mutate GcHeap/ByrefExposed
             // see comments in ValueNum.cpp (under the memory read case)
@@ -235,26 +228,7 @@ void Compiler::fgPerNodeLocalVarLiveness(GenTree* tree)
                 fgCurMemoryDef |= memoryKindSet(GcHeap, ByrefExposed);
             }
 
-            // If the GT_IND is the lhs of an assignment, we'll handle it
-            // as a memory def, when we get to assignment.
-            // Otherwise, we treat it as a use here.
-            if ((tree->gtFlags & GTF_IND_ASG_LHS) == 0)
-            {
-                fgCurMemoryUse |= memoryKindSet(GcHeap, ByrefExposed);
-            }
-            break;
-
-        // These should have been morphed away to become GT_INDs:
-        case GT_FIELD:
-            unreached();
-            break;
-
-        case GT_ASG:
-            // An indirect store defines a memory location.
-            if (!tree->AsOp()->gtGetOp1()->OperIsLocal())
-            {
-                fgCurMemoryDef |= memoryKindSet(GcHeap, ByrefExposed);
-            }
+            fgCurMemoryUse |= memoryKindSet(GcHeap, ByrefExposed);
             break;
 
         // We'll assume these are use-then-defs of memory.
@@ -270,30 +244,15 @@ void Compiler::fgPerNodeLocalVarLiveness(GenTree* tree)
             break;
 
         case GT_STOREIND:
-        case GT_STORE_OBJ:
         case GT_STORE_BLK:
-        case GT_STORE_DYN_BLK:
         case GT_MEMORYBARRIER: // Similar to Volatile indirections, we must handle this as a memory def.
             fgCurMemoryDef |= memoryKindSet(GcHeap, ByrefExposed);
             break;
 
-#ifdef FEATURE_HW_INTRINSICS
+#if defined(FEATURE_HW_INTRINSICS)
         case GT_HWINTRINSIC:
         {
-            GenTreeHWIntrinsic* hwIntrinsicNode = tree->AsHWIntrinsic();
-
-            // We can't call fgMutateGcHeap unless the block has recorded a MemoryDef
-            //
-            if (hwIntrinsicNode->OperIsMemoryStore())
-            {
-                // We currently handle this like a Volatile store, so it counts as a definition of GcHeap/ByrefExposed
-                fgCurMemoryDef |= memoryKindSet(GcHeap, ByrefExposed);
-            }
-            if (hwIntrinsicNode->OperIsMemoryLoad())
-            {
-                // This instruction loads from memory and we need to record this information
-                fgCurMemoryUse |= memoryKindSet(GcHeap, ByrefExposed);
-            }
+            fgPerNodeLocalVarLiveness(tree->AsHWIntrinsic());
             break;
         }
 #endif // FEATURE_HW_INTRINSICS
@@ -303,7 +262,7 @@ void Compiler::fgPerNodeLocalVarLiveness(GenTree* tree)
         {
             GenTreeCall* call    = tree->AsCall();
             bool         modHeap = true;
-            if (call->gtCallType == CT_HELPER)
+            if (call->IsHelperCall())
             {
                 CorInfoHelpFunc helpFunc = eeGetHelperNum(call->gtCallMethHnd);
 
@@ -328,7 +287,7 @@ void Compiler::fgPerNodeLocalVarLiveness(GenTree* tree)
 
             if ((call->IsUnmanaged() || call->IsTailCallViaJitHelper()) && compMethodRequiresPInvokeFrame())
             {
-                assert((!opts.ShouldUsePInvokeHelpers()) || (info.compLvFrameListRoot == BAD_VAR_NUM));
+                assert(!opts.ShouldUsePInvokeHelpers() || (info.compLvFrameListRoot == BAD_VAR_NUM));
                 if (!opts.ShouldUsePInvokeHelpers() && !call->IsSuppressGCTransition())
                 {
                     // Get the FrameRoot local and mark it as used.
@@ -351,6 +310,27 @@ void Compiler::fgPerNodeLocalVarLiveness(GenTree* tree)
             break;
     }
 }
+
+#if defined(FEATURE_HW_INTRINSICS)
+void Compiler::fgPerNodeLocalVarLiveness(GenTreeHWIntrinsic* hwintrinsic)
+{
+    NamedIntrinsic intrinsicId = hwintrinsic->GetHWIntrinsicId();
+
+    // We can't call fgMutateGcHeap unless the block has recorded a MemoryDef
+    //
+    if (hwintrinsic->OperIsMemoryStoreOrBarrier())
+    {
+        // We currently handle this like a Volatile store or GT_MEMORYBARRIER
+        // so it counts as a definition of GcHeap/ByrefExposed
+        fgCurMemoryDef |= memoryKindSet(GcHeap, ByrefExposed);
+    }
+    else if (hwintrinsic->OperIsMemoryLoad())
+    {
+        // This instruction loads from memory and we need to record this information
+        fgCurMemoryUse |= memoryKindSet(GcHeap, ByrefExposed);
+    }
+}
+#endif // FEATURE_HW_INTRINSICS
 
 /*****************************************************************************/
 void Compiler::fgPerBlockLocalVarLiveness()
@@ -384,7 +364,7 @@ void Compiler::fgPerBlockLocalVarLiveness()
             }
         }
 
-        for (block = fgFirstBB; block; block = block->bbNext)
+        for (block = fgFirstBB; block; block = block->Next())
         {
             // Strictly speaking, the assignments for the "Def" cases aren't necessary here.
             // The empty set would do as well.  Use means "use-before-def", so as long as that's
@@ -397,9 +377,10 @@ void Compiler::fgPerBlockLocalVarLiveness()
             block->bbMemoryLiveIn  = fullMemoryKindSet;
             block->bbMemoryLiveOut = fullMemoryKindSet;
 
-            switch (block->bbJumpKind)
+            switch (block->GetKind())
             {
                 case BBJ_EHFINALLYRET:
+                case BBJ_EHFAULTRET:
                 case BBJ_THROW:
                 case BBJ_RETURN:
                     VarSetOps::AssignNoCopy(this, block->bbLiveOut, VarSetOps::MakeEmpty(this));
@@ -425,7 +406,7 @@ void Compiler::fgPerBlockLocalVarLiveness()
     // memory that is not a GC Heap def.
     byrefStatesMatchGcHeapStates = true;
 
-    for (block = fgFirstBB; block; block = block->bbNext)
+    for (block = fgFirstBB; block; block = block->Next())
     {
         VarSetOps::ClearD(this, fgCurUseSet);
         VarSetOps::ClearD(this, fgCurDefSet);
@@ -509,15 +490,14 @@ void Compiler::fgPerBlockLocalVarLiveness()
 
         // Mark the FrameListRoot as used, if applicable.
 
-        if (block->bbJumpKind == BBJ_RETURN && compMethodRequiresPInvokeFrame())
+        if (block->KindIs(BBJ_RETURN) && compMethodRequiresPInvokeFrame())
         {
-            assert((!opts.ShouldUsePInvokeHelpers()) || (info.compLvFrameListRoot == BAD_VAR_NUM));
+            assert(!opts.ShouldUsePInvokeHelpers() || (info.compLvFrameListRoot == BAD_VAR_NUM));
             if (!opts.ShouldUsePInvokeHelpers())
             {
                 // 32-bit targets always pop the frame in the epilog.
                 // For 64-bit targets, we only do this in the epilog for IL stubs;
                 // for non-IL stubs the frame is popped after every PInvoke call.
-                CLANG_FORMAT_COMMENT_ANCHOR;
 #ifdef TARGET_64BIT
                 if (opts.jitFlags->IsSet(JitFlags::JIT_FLAG_IL_STUB))
 #endif
@@ -682,62 +662,6 @@ void Compiler::fgDispDebugScopes()
  * Mark variables live across their entire scope.
  */
 
-#if defined(FEATURE_EH_FUNCLETS)
-
-void Compiler::fgExtendDbgScopes()
-{
-    compResetScopeLists();
-
-#ifdef DEBUG
-    if (verbose)
-    {
-        printf("\nMarking vars alive over their entire scope :\n\n");
-    }
-
-    if (verbose)
-    {
-        compDispScopeLists();
-    }
-#endif // DEBUG
-
-    VARSET_TP inScope(VarSetOps::MakeEmpty(this));
-
-    // Mark all tracked LocalVars live over their scope - walk the blocks
-    // keeping track of the current life, and assign it to the blocks.
-
-    for (BasicBlock* const block : Blocks())
-    {
-        // If we get to a funclet, reset the scope lists and start again, since the block
-        // offsets will be out of order compared to the previous block.
-
-        if (block->bbFlags & BBF_FUNCLET_BEG)
-        {
-            compResetScopeLists();
-            VarSetOps::ClearD(this, inScope);
-        }
-
-        // Process all scopes up to the current offset
-
-        if (block->bbCodeOffs != BAD_IL_OFFSET)
-        {
-            compProcessScopesUntil(block->bbCodeOffs, &inScope, &Compiler::fgBeginScopeLife, &Compiler::fgEndScopeLife);
-        }
-
-        // Assign the current set of variables that are in scope to the block variables tracking this.
-
-        fgMarkInScope(block, inScope);
-    }
-
-#ifdef DEBUG
-    if (verbose)
-    {
-        fgDispDebugScopes();
-    }
-#endif // DEBUG
-}
-
-#else // !FEATURE_EH_FUNCLETS
-
 void Compiler::fgExtendDbgScopes()
 {
     compResetScopeLists();
@@ -751,65 +675,105 @@ void Compiler::fgExtendDbgScopes()
 #endif // DEBUG
 
     VARSET_TP inScope(VarSetOps::MakeEmpty(this));
-    compProcessScopesUntil(0, &inScope, &Compiler::fgBeginScopeLife, &Compiler::fgEndScopeLife);
 
-    IL_OFFSET lastEndOffs = 0;
-
-    // Mark all tracked LocalVars live over their scope - walk the blocks
-    // keeping track of the current life, and assign it to the blocks.
-
-    for (BasicBlock* const block : Blocks())
+    if (UsesFunclets())
     {
-        // Find scopes becoming alive. If there is a gap in the instr
-        // sequence, we need to process any scopes on those missing offsets.
+        // Mark all tracked LocalVars live over their scope - walk the blocks
+        // keeping track of the current life, and assign it to the blocks.
 
-        if (block->bbCodeOffs != BAD_IL_OFFSET)
+        for (BasicBlock* const block : Blocks())
         {
-            if (lastEndOffs != block->bbCodeOffs)
+            // If we get to a funclet, reset the scope lists and start again, since the block
+            // offsets will be out of order compared to the previous block.
+
+            if (block->HasFlag(BBF_FUNCLET_BEG))
             {
-                noway_assert(lastEndOffs < block->bbCodeOffs);
+                compResetScopeLists();
+                VarSetOps::ClearD(this, inScope);
+            }
 
+            // Process all scopes up to the current offset
+
+            if (block->bbCodeOffs != BAD_IL_OFFSET)
+            {
                 compProcessScopesUntil(block->bbCodeOffs, &inScope, &Compiler::fgBeginScopeLife,
                                        &Compiler::fgEndScopeLife);
             }
-            else
+
+            // Assign the current set of variables that are in scope to the block variables tracking this.
+
+            fgMarkInScope(block, inScope);
+        }
+
+#ifdef DEBUG
+        if (verbose)
+        {
+            fgDispDebugScopes();
+        }
+#endif // DEBUG
+    }
+#if defined(FEATURE_EH_WINDOWS_X86)
+    else
+    {
+        compProcessScopesUntil(0, &inScope, &Compiler::fgBeginScopeLife, &Compiler::fgEndScopeLife);
+
+        IL_OFFSET lastEndOffs = 0;
+
+        // Mark all tracked LocalVars live over their scope - walk the blocks
+        // keeping track of the current life, and assign it to the blocks.
+
+        for (BasicBlock* const block : Blocks())
+        {
+            // Find scopes becoming alive. If there is a gap in the instr
+            // sequence, we need to process any scopes on those missing offsets.
+
+            if (block->bbCodeOffs != BAD_IL_OFFSET)
             {
-                while (VarScopeDsc* varScope = compGetNextEnterScope(block->bbCodeOffs))
+                if (lastEndOffs != block->bbCodeOffs)
                 {
-                    fgBeginScopeLife(&inScope, varScope);
+                    noway_assert(lastEndOffs < block->bbCodeOffs);
+
+                    compProcessScopesUntil(block->bbCodeOffs, &inScope, &Compiler::fgBeginScopeLife,
+                                           &Compiler::fgEndScopeLife);
+                }
+                else
+                {
+                    while (VarScopeDsc* varScope = compGetNextEnterScope(block->bbCodeOffs))
+                    {
+                        fgBeginScopeLife(&inScope, varScope);
+                    }
                 }
             }
-        }
 
-        // Assign the current set of variables that are in scope to the block variables tracking this.
+            // Assign the current set of variables that are in scope to the block variables tracking this.
 
-        fgMarkInScope(block, inScope);
+            fgMarkInScope(block, inScope);
 
-        // Find scopes going dead.
+            // Find scopes going dead.
 
-        if (block->bbCodeOffsEnd != BAD_IL_OFFSET)
-        {
-            VarScopeDsc* varScope;
-            while ((varScope = compGetNextExitScope(block->bbCodeOffsEnd)) != nullptr)
+            if (block->bbCodeOffsEnd != BAD_IL_OFFSET)
             {
-                fgEndScopeLife(&inScope, varScope);
+                VarScopeDsc* varScope;
+                while ((varScope = compGetNextExitScope(block->bbCodeOffsEnd)) != nullptr)
+                {
+                    fgEndScopeLife(&inScope, varScope);
+                }
+
+                lastEndOffs = block->bbCodeOffsEnd;
             }
-
-            lastEndOffs = block->bbCodeOffsEnd;
         }
+
+        /* Everything should be out of scope by the end of the method. But if the
+        last BB got removed, then inScope may not be empty. */
+
+        noway_assert(VarSetOps::IsEmpty(this, inScope) || lastEndOffs < info.compILCodeSize);
     }
-
-    /* Everything should be out of scope by the end of the method. But if the
-       last BB got removed, then inScope may not be empty. */
-
-    noway_assert(VarSetOps::IsEmpty(this, inScope) || lastEndOffs < info.compILCodeSize);
+#endif // FEATURE_EH_WINDOWS_X86
 }
-
-#endif // !FEATURE_EH_FUNCLETS
 
 /*****************************************************************************
  *
- * For debuggable code, we allow redundant assignments to vars
+ * For debuggable code, we allow redundant stores to vars
  * by marking them live over their entire scope.
  */
 
@@ -830,10 +794,10 @@ void Compiler::fgExtendDbgLifetimes()
 
     fgExtendDbgScopes();
 
-/*-------------------------------------------------------------------------
- * Partly update liveness info so that we handle any funky BBF_INTERNAL
- * blocks inserted out of sequence.
- */
+    /*-------------------------------------------------------------------------
+     * Partly update liveness info so that we handle any funky BBF_INTERNAL
+     * blocks inserted out of sequence.
+     */
 
 #ifdef DEBUG
     if (verbose && 0)
@@ -904,33 +868,24 @@ void Compiler::fgExtendDbgLifetimes()
     {
         VarSetOps::ClearD(this, initVars);
 
-        switch (block->bbJumpKind)
+        switch (block->GetKind())
         {
-            case BBJ_NONE:
-                PREFIX_ASSUME(block->bbNext != nullptr);
-                VarSetOps::UnionD(this, initVars, block->bbNext->bbScope);
-                break;
-
             case BBJ_ALWAYS:
             case BBJ_EHCATCHRET:
             case BBJ_EHFILTERRET:
-                VarSetOps::UnionD(this, initVars, block->bbJumpDest->bbScope);
+            case BBJ_CALLFINALLY:
+                VarSetOps::UnionD(this, initVars, block->GetTarget()->bbScope);
                 break;
 
-            case BBJ_CALLFINALLY:
-                if (!(block->bbFlags & BBF_RETLESS_CALL))
-                {
-                    assert(block->isBBCallAlwaysPair());
-                    PREFIX_ASSUME(block->bbNext != nullptr);
-                    VarSetOps::UnionD(this, initVars, block->bbNext->bbScope);
-                }
-                VarSetOps::UnionD(this, initVars, block->bbJumpDest->bbScope);
+            case BBJ_CALLFINALLYRET:
+                VarSetOps::UnionD(this, initVars, block->bbScope);
+                VarSetOps::UnionD(this, initVars, block->GetFinallyContinuation()->bbScope);
                 break;
 
             case BBJ_COND:
-                PREFIX_ASSUME(block->bbNext != nullptr);
-                VarSetOps::UnionD(this, initVars, block->bbNext->bbScope);
-                VarSetOps::UnionD(this, initVars, block->bbJumpDest->bbScope);
+                PREFIX_ASSUME(!block->IsLast());
+                VarSetOps::UnionD(this, initVars, block->GetFalseTarget()->bbScope);
+                VarSetOps::UnionD(this, initVars, block->GetTrueTarget()->bbScope);
                 break;
 
             case BBJ_SWITCH:
@@ -941,6 +896,7 @@ void Compiler::fgExtendDbgLifetimes()
                 break;
 
             case BBJ_EHFINALLYRET:
+            case BBJ_EHFAULTRET:
             case BBJ_RETURN:
                 break;
 
@@ -952,7 +908,7 @@ void Compiler::fgExtendDbgLifetimes()
                 break;
 
             default:
-                noway_assert(!"Unexpected bbJumpKind");
+                noway_assert(!"Unexpected bbKind");
                 break;
         }
 
@@ -982,15 +938,13 @@ void Compiler::fgExtendDbgLifetimes()
             // If we haven't already done this ...
             if (!fgLocalVarLivenessDone)
             {
-                // Create a "zero" node
-                GenTree* zero = gtNewZeroConNode(type);
+                // Create the initializer.
+                GenTree* zero     = gtNewZeroConNode(type);
+                GenTree* initNode = gtNewStoreLclVarNode(varNum, zero);
 
-                // Create initialization node
+                // Insert initialization node.
                 if (!block->IsLIR())
                 {
-                    GenTree* varNode  = gtNewLclvNode(varNum, type);
-                    GenTree* initNode = gtNewAssignNode(varNode, zero);
-
                     // Create a statement for the initializer, sequence it, and append it to the current BB.
                     Statement* initStmt = gtNewStmt(initNode);
                     gtSetStmtInfo(initStmt);
@@ -999,12 +953,8 @@ void Compiler::fgExtendDbgLifetimes()
                 }
                 else
                 {
-                    GenTree* store       = new (this, GT_STORE_LCL_VAR) GenTreeLclVar(GT_STORE_LCL_VAR, type, varNum);
-                    store->AsOp()->gtOp1 = zero;
-                    store->gtFlags |= (GTF_VAR_DEF | GTF_ASG);
-
                     LIR::Range initRange = LIR::EmptyRange();
-                    initRange.InsertBefore(nullptr, zero, store);
+                    initRange.InsertAfter(nullptr, zero, initNode);
 
 #if !defined(TARGET_64BIT)
                     DecomposeLongs::DecomposeRange(this, initRange);
@@ -1038,7 +988,7 @@ void Compiler::fgExtendDbgLifetimes()
     //   So just ensure that they don't have a 0 ref cnt
 
     unsigned lclNum = 0;
-    for (LclVarDsc *varDsc = lvaTable; lclNum < lvaCount; lclNum++, varDsc++)
+    for (LclVarDsc* varDsc = lvaTable; lclNum < lvaCount; lclNum++, varDsc++)
     {
         if (lclNum >= info.compArgsCount)
         {
@@ -1062,150 +1012,24 @@ void Compiler::fgExtendDbgLifetimes()
 }
 
 //------------------------------------------------------------------------
-// fgGetHandlerLiveVars: determine set of locals live because of implicit
+// fgAddHandlerLiveVars: determine set of locals live because of implicit
 //   exception flow from a block.
 //
 // Arguments:
 //    block - the block in question
+//    ehHandlerLiveVars - On entry, contains an allocated VARSET_TP that the
+//                        function will add handler live vars into.
+//    memoryLiveness    - Set of memory liveness that will be added to.
 //
-// Returns:
-//    Additional set of locals to be considered live throughout the block.
-//
-// Notes:
-//    Assumes caller has screened candidate blocks to only those with
-//    exception flow, via `ehBlockHasExnFlowDsc`.
-//
-//    Exception flow can arise because of a newly raised exception (for
-//    blocks within try regions) or because of an actively propagating exception
-//    (for filter blocks). This flow effectively creates additional successor
-//    edges in the flow graph that the jit does not model. This method computes
-//    the net contribution from all the missing successor edges.
-//
-//    For example, with the following C# source, during EH processing of the throw,
-//    the outer filter will execute in pass1, before the inner handler executes
-//    in pass2, and so the filter blocks should show the inner handler's local is live.
-//
-//    try
-//    {
-//        using (AllocateObject())   // ==> try-finally; handler calls Dispose
-//        {
-//            throw new Exception();
-//        }
-//    }
-//    catch (Exception e1) when (IsExpectedException(e1))
-//    {
-//        Console.WriteLine("In catch 1");
-//    }
-
-VARSET_VALRET_TP Compiler::fgGetHandlerLiveVars(BasicBlock* block)
+void Compiler::fgAddHandlerLiveVars(BasicBlock* block, VARSET_TP& ehHandlerLiveVars, MemoryKindSet& memoryLiveness)
 {
-    noway_assert(block);
-    noway_assert(ehBlockHasExnFlowDsc(block));
+    assert(block->HasPotentialEHSuccs(this));
 
-    VARSET_TP liveVars(VarSetOps::MakeEmpty(this));
-    EHblkDsc* HBtab = ehGetBlockExnFlowDsc(block);
-
-    do
-    {
-        /* Either we enter the filter first or the catch/finally */
-        if (HBtab->HasFilter())
-        {
-            VarSetOps::UnionD(this, liveVars, HBtab->ebdFilter->bbLiveIn);
-#if defined(FEATURE_EH_FUNCLETS)
-            // The EH subsystem can trigger a stack walk after the filter
-            // has returned, but before invoking the handler, and the only
-            // IP address reported from this method will be the original
-            // faulting instruction, thus everything in the try body
-            // must report as live any variables live-out of the filter
-            // (which is the same as those live-in to the handler)
-            VarSetOps::UnionD(this, liveVars, HBtab->ebdHndBeg->bbLiveIn);
-#endif // FEATURE_EH_FUNCLETS
-        }
-        else
-        {
-            VarSetOps::UnionD(this, liveVars, HBtab->ebdHndBeg->bbLiveIn);
-        }
-
-        /* If we have nested try's edbEnclosing will provide them */
-        noway_assert((HBtab->ebdEnclosingTryIndex == EHblkDsc::NO_ENCLOSING_INDEX) ||
-                     (HBtab->ebdEnclosingTryIndex > ehGetIndex(HBtab)));
-
-        unsigned outerIndex = HBtab->ebdEnclosingTryIndex;
-        if (outerIndex == EHblkDsc::NO_ENCLOSING_INDEX)
-        {
-            break;
-        }
-        HBtab = ehGetDsc(outerIndex);
-
-    } while (true);
-
-    // If this block is within a filter, we also need to report as live
-    // any vars live into enclosed finally or fault handlers, since the
-    // filter will run during the first EH pass, and enclosed or enclosing
-    // handlers will run during the second EH pass. So all these handlers
-    // are "exception flow" successors of the filter.
-    //
-    // Note we are relying on ehBlockHasExnFlowDsc to return true
-    // for any filter block that we should examine here.
-    if (block->hasHndIndex())
-    {
-        const unsigned thisHndIndex   = block->getHndIndex();
-        EHblkDsc*      enclosingHBtab = ehGetDsc(thisHndIndex);
-
-        if (enclosingHBtab->InFilterRegionBBRange(block))
-        {
-            assert(enclosingHBtab->HasFilter());
-
-            // Search the EH table for enclosed regions.
-            //
-            // All the enclosed regions will be lower numbered and
-            // immediately prior to and contiguous with the enclosing
-            // region in the EH tab.
-            unsigned index = thisHndIndex;
-
-            while (index > 0)
-            {
-                index--;
-                unsigned enclosingIndex = ehGetEnclosingTryIndex(index);
-                bool     isEnclosed     = false;
-
-                // To verify this is an enclosed region, search up
-                // through the enclosing regions until we find the
-                // region associated with the filter.
-                while (enclosingIndex != EHblkDsc::NO_ENCLOSING_INDEX)
-                {
-                    if (enclosingIndex == thisHndIndex)
-                    {
-                        isEnclosed = true;
-                        break;
-                    }
-
-                    enclosingIndex = ehGetEnclosingTryIndex(enclosingIndex);
-                }
-
-                // If we found an enclosed region, check if the region
-                // is a try fault or try finally, and if so, add any
-                // locals live into the enclosed region's handler into this
-                // block's live-in set.
-                if (isEnclosed)
-                {
-                    EHblkDsc* enclosedHBtab = ehGetDsc(index);
-
-                    if (enclosedHBtab->HasFinallyOrFaultHandler())
-                    {
-                        VarSetOps::UnionD(this, liveVars, enclosedHBtab->ebdHndBeg->bbLiveIn);
-                    }
-                }
-                // Once we run across a non-enclosed region, we can stop searching.
-                else
-                {
-                    break;
-                }
-            }
-        }
-    }
-
-    return liveVars;
+    block->VisitEHSuccs(this, [&](BasicBlock* succ) {
+        VarSetOps::UnionD(this, ehHandlerLiveVars, succ->bbLiveIn);
+        memoryLiveness |= succ->bbMemoryLiveIn;
+        return BasicBlockVisit::Continue;
+    });
 }
 
 class LiveVarAnalysis
@@ -1218,6 +1042,7 @@ class LiveVarAnalysis
     unsigned  m_memoryLiveOut;
     VARSET_TP m_liveIn;
     VARSET_TP m_liveOut;
+    VARSET_TP m_ehHandlerLiveVars;
 
     LiveVarAnalysis(Compiler* compiler)
         : m_compiler(compiler)
@@ -1226,6 +1051,7 @@ class LiveVarAnalysis
         , m_memoryLiveOut(emptyMemoryKindSet)
         , m_liveIn(VarSetOps::MakeEmpty(compiler))
         , m_liveOut(VarSetOps::MakeEmpty(compiler))
+        , m_ehHandlerLiveVars(VarSetOps::MakeEmpty(compiler))
     {
     }
 
@@ -1250,8 +1076,7 @@ class LiveVarAnalysis
             }
         }
 
-        if (m_compiler->fgIsDoingEarlyLiveness && m_compiler->opts.IsOSR() &&
-            ((block->bbFlags & BBF_RECURSIVE_TAILCALL) != 0))
+        if (m_compiler->fgIsDoingEarlyLiveness && m_compiler->opts.IsOSR() && block->HasFlag(BBF_RECURSIVE_TAILCALL))
         {
             // Early liveness happens between import and morph where we may
             // have identified a tailcall-to-loop candidate but not yet
@@ -1271,16 +1096,20 @@ class LiveVarAnalysis
             }
         }
 
-        // Additionally, union in all the live-in tracked vars of successors.
-        for (BasicBlock* succ : block->GetAllSuccs(m_compiler))
-        {
+        // Additionally, union in all the live-in tracked vars of regular
+        // successors. EH successors need to be handled more conservatively
+        // (their live-in state is live in this entire basic block). Those are
+        // handled below.
+        block->VisitRegularSuccs(m_compiler, [=](BasicBlock* succ) {
             VarSetOps::UnionD(m_compiler, m_liveOut, succ->bbLiveIn);
             m_memoryLiveOut |= succ->bbMemoryLiveIn;
             if (succ->bbNum <= block->bbNum)
             {
                 m_hasPossibleBackEdge = true;
             }
-        }
+
+            return BasicBlockVisit::Continue;
+        });
 
         /* For lvaKeepAliveAndReportThis methods, "this" has to be kept alive everywhere
            Note that a function may end in a throw on an infinite loop (as opposed to a return).
@@ -1294,24 +1123,25 @@ class LiveVarAnalysis
         /* Compute the 'm_liveIn'  set */
         VarSetOps::LivenessD(m_compiler, m_liveIn, block->bbVarDef, block->bbVarUse, m_liveOut);
 
-        // Even if block->bbMemoryDef is set, we must assume that it doesn't kill memory liveness from m_memoryLiveOut,
-        // since (without proof otherwise) the use and def may touch different memory at run-time.
-        m_memoryLiveIn = m_memoryLiveOut | block->bbMemoryUse;
-
         // Does this block have implicit exception flow to a filter or handler?
         // If so, include the effects of that flow.
-        if (m_compiler->ehBlockHasExnFlowDsc(block))
+        if (block->HasPotentialEHSuccs(m_compiler))
         {
-            const VARSET_TP& liveVars(m_compiler->fgGetHandlerLiveVars(block));
-            VarSetOps::UnionD(m_compiler, m_liveIn, liveVars);
-            VarSetOps::UnionD(m_compiler, m_liveOut, liveVars);
+            VarSetOps::ClearD(m_compiler, m_ehHandlerLiveVars);
+            m_compiler->fgAddHandlerLiveVars(block, m_ehHandlerLiveVars, m_memoryLiveOut);
+            VarSetOps::UnionD(m_compiler, m_liveIn, m_ehHandlerLiveVars);
+            VarSetOps::UnionD(m_compiler, m_liveOut, m_ehHandlerLiveVars);
 
             // Implicit eh edges can induce loop-like behavior,
             // so make sure we iterate to closure.
             m_hasPossibleBackEdge = true;
         }
 
-        /* Has there been any change in either live set? */
+        // Even if block->bbMemoryDef is set, we must assume that it doesn't kill memory liveness from m_memoryLiveOut,
+        // since (without proof otherwise) the use and def may touch different memory at run-time.
+        m_memoryLiveIn = m_memoryLiveOut | block->bbMemoryUse;
+
+        // Has there been any change in either live set?
 
         bool liveInChanged = !VarSetOps::Equal(m_compiler, block->bbLiveIn, m_liveIn);
         if (liveInChanged || !VarSetOps::Equal(m_compiler, block->bbLiveOut, m_liveOut))
@@ -1320,7 +1150,7 @@ class LiveVarAnalysis
             {
                 // Only "extend" liveness over BBF_INTERNAL blocks
 
-                noway_assert(block->bbFlags & BBF_INTERNAL);
+                noway_assert(block->HasFlag(BBF_INTERNAL));
 
                 liveInChanged = !VarSetOps::IsSubset(m_compiler, m_liveIn, block->bbLiveIn);
                 if (liveInChanged || !VarSetOps::IsSubset(m_compiler, m_liveOut, block->bbLiveOut))
@@ -1376,11 +1206,11 @@ class LiveVarAnalysis
             m_memoryLiveIn  = emptyMemoryKindSet;
             m_memoryLiveOut = emptyMemoryKindSet;
 
-            for (BasicBlock* block = m_compiler->fgLastBB; block; block = block->bbPrev)
+            for (BasicBlock* block = m_compiler->fgLastBB; block; block = block->Prev())
             {
                 // sometimes block numbers are not monotonically increasing which
                 // would cause us not to identify backedges
-                if (block->bbNext && block->bbNext->bbNum <= block->bbNum)
+                if (!block->IsLast() && block->Next()->bbNum <= block->bbNum)
                 {
                     m_hasPossibleBackEdge = true;
                 }
@@ -1392,7 +1222,7 @@ class LiveVarAnalysis
 
                     noway_assert(m_compiler->opts.compDbgCode && (m_compiler->info.compVarScopesCount > 0));
 
-                    if (!(block->bbFlags & BBF_INTERNAL))
+                    if (!block->HasFlag(BBF_INTERNAL))
                     {
                         continue;
                     }
@@ -1462,7 +1292,7 @@ void Compiler::fgComputeLifeCall(VARSET_TP& life, GenTreeCall* call)
     // This ensure that this variable is kept alive at the tail-call
     if (call->IsTailCallViaJitHelper() && compMethodRequiresPInvokeFrame())
     {
-        assert((!opts.ShouldUsePInvokeHelpers()) || (info.compLvFrameListRoot == BAD_VAR_NUM));
+        assert(!opts.ShouldUsePInvokeHelpers() || (info.compLvFrameListRoot == BAD_VAR_NUM));
         if (!opts.ShouldUsePInvokeHelpers())
         {
             // Get the FrameListRoot local and make it live.
@@ -1483,7 +1313,7 @@ void Compiler::fgComputeLifeCall(VARSET_TP& life, GenTreeCall* call)
     if (call->IsUnmanaged() && compMethodRequiresPInvokeFrame())
     {
         // Get the FrameListRoot local and make it live.
-        assert((!opts.ShouldUsePInvokeHelpers()) || (info.compLvFrameListRoot == BAD_VAR_NUM));
+        assert(!opts.ShouldUsePInvokeHelpers() || (info.compLvFrameListRoot == BAD_VAR_NUM));
         if (!opts.ShouldUsePInvokeHelpers() && !call->IsSuppressGCTransition())
         {
             LclVarDsc* frameVarDsc = lvaGetDesc(info.compLvFrameListRoot);
@@ -1728,8 +1558,8 @@ bool Compiler::fgComputeLifeUntrackedLocal(VARSET_TP&           life,
     if (isDef && !anyFieldLive && !opts.MinOpts())
     {
         // Do not consider this store dead if the parent local variable is an address exposed local or
-        // if the struct has a custom layout and holes.
-        return !(varDsc.IsAddressExposed() || (varDsc.lvCustomLayout && varDsc.lvContainsHoles));
+        // if the struct has any significant padding we must retain the value of.
+        return !varDsc.IsAddressExposed() && !varDsc.lvAnySignificantPadding;
     }
 
     return false;
@@ -1793,7 +1623,7 @@ bool Compiler::fgComputeLifeLocal(VARSET_TP& life, VARSET_VALARG_TP keepAliveVar
 //
 GenTree* Compiler::fgTryRemoveDeadStoreEarly(Statement* stmt, GenTreeLclVarCommon* cur)
 {
-    if (!stmt->GetRootNode()->OperIs(GT_ASG) || (stmt->GetRootNode()->gtGetOp1() != cur))
+    if (!stmt->GetRootNode()->OperIsLocalStore() || (stmt->GetRootNode() != cur))
     {
         return cur->gtPrev;
     }
@@ -1803,7 +1633,7 @@ GenTree* Compiler::fgTryRemoveDeadStoreEarly(Statement* stmt, GenTreeLclVarCommo
     assert(stmt->GetTreeListEnd() == cur);
 
     GenTree* sideEffects = nullptr;
-    gtExtractSideEffList(stmt->GetRootNode()->gtGetOp2(), &sideEffects);
+    gtExtractSideEffList(stmt->GetRootNode()->AsLclVarCommon()->Data(), &sideEffects);
 
     if (sideEffects == nullptr)
     {
@@ -1829,10 +1659,10 @@ GenTree* Compiler::fgTryRemoveDeadStoreEarly(Statement* stmt, GenTreeLclVarCommo
  * or subtree of a statement moving backward from startNode to endNode
  */
 
-void Compiler::fgComputeLife(VARSET_TP&       life,
-                             GenTree*         startNode,
-                             GenTree*         endNode,
-                             VARSET_VALARG_TP volatileVars,
+void Compiler::fgComputeLife(VARSET_TP&           life,
+                             GenTree*             startNode,
+                             GenTree*             endNode,
+                             VARSET_VALARG_TP     volatileVars,
                              bool* pStmtInfoDirty DEBUGARG(bool* treeModf))
 {
     // Don't kill vars in scope
@@ -1840,10 +1670,8 @@ void Compiler::fgComputeLife(VARSET_TP&       life,
 
     noway_assert(VarSetOps::IsSubset(this, keepAliveVars, life));
     noway_assert(endNode || (startNode == compCurStmt->GetRootNode()));
-
     assert(!fgIsDoingEarlyLiveness);
-    // NOTE: Live variable analysis will not work if you try
-    // to use the result of an assignment node directly!
+
     for (GenTree* tree = startNode; tree != endNode; tree = tree->gtPrev)
     {
     AGAIN:
@@ -1853,7 +1681,7 @@ void Compiler::fgComputeLife(VARSET_TP&       life,
         {
             fgComputeLifeCall(life, tree->AsCall());
         }
-        else if (tree->OperIsNonPhiLocal() || tree->OperIsLocalAddr())
+        else if (tree->OperIsNonPhiLocal() || tree->OperIs(GT_LCL_ADDR))
         {
             bool isDeadStore = fgComputeLifeLocal(life, keepAliveVars, tree);
             if (isDeadStore)
@@ -1934,8 +1762,8 @@ void Compiler::fgComputeLifeLIR(VARSET_TP& life, BasicBlock* block, VARSET_VALAR
                             operand->SetUnusedValue();
                         }
 
-                        // Special-case PUTARG_STK: since this operator is not considered a value, DCE will not remove
-                        // these nodes.
+                        // Special-case PUTARG_STK: since this operator is not considered a value, DCE will not
+                        // remove these nodes.
                         if (operand->OperIs(GT_PUTARG_STK))
                         {
                             operand->AsPutArgStk()->gtOp1->SetUnusedValue();
@@ -1992,8 +1820,7 @@ void Compiler::fgComputeLifeLIR(VARSET_TP& life, BasicBlock* block, VARSET_VALAR
                 break;
             }
 
-            case GT_LCL_VAR_ADDR:
-            case GT_LCL_FLD_ADDR:
+            case GT_LCL_ADDR:
                 if (node->IsUnusedValue())
                 {
                     JITDUMP("Removing dead LclVar address:\n");
@@ -2012,8 +1839,7 @@ void Compiler::fgComputeLifeLIR(VARSET_TP& life, BasicBlock* block, VARSET_VALAR
                     if (isDeadStore)
                     {
                         LIR::Use addrUse;
-                        if (blockRange.TryGetUse(node, &addrUse) &&
-                            (addrUse.User()->OperIs(GT_STOREIND, GT_STORE_BLK, GT_STORE_OBJ)))
+                        if (blockRange.TryGetUse(node, &addrUse) && (addrUse.User()->OperIs(GT_STOREIND, GT_STORE_BLK)))
                         {
                             GenTreeIndir* const store = addrUse.User()->AsIndir();
 
@@ -2053,12 +1879,12 @@ void Compiler::fgComputeLifeLIR(VARSET_TP& life, BasicBlock* block, VARSET_VALAR
 
                 if (isDeadStore && fgTryRemoveDeadStoreLIR(node, lclVarNode, block))
                 {
-                    GenTree* data = lclVarNode->Data();
-                    data->SetUnusedValue();
+                    GenTree* value = lclVarNode->Data();
+                    value->SetUnusedValue();
 
-                    if (data->isIndir())
+                    if (value->isIndir())
                     {
-                        Lowering::TransformUnusedIndirection(data->AsIndir(), this, block);
+                        Lowering::TransformUnusedIndirection(value->AsIndir(), this, block);
                     }
                 }
                 break;
@@ -2071,7 +1897,6 @@ void Compiler::fgComputeLifeLIR(VARSET_TP& life, BasicBlock* block, VARSET_VALAR
             case GT_CNS_DBL:
             case GT_CNS_STR:
             case GT_CNS_VEC:
-            case GT_CLS_VAR_ADDR:
             case GT_PHYSREG:
                 // These are all side-effect-free leaf nodes.
                 if (node->IsUnusedValue())
@@ -2093,10 +1918,9 @@ void Compiler::fgComputeLifeLIR(VARSET_TP& life, BasicBlock* block, VARSET_VALAR
             case GT_JMP:
             case GT_STOREIND:
             case GT_BOUNDS_CHECK:
-            case GT_STORE_OBJ:
             case GT_STORE_BLK:
-            case GT_STORE_DYN_BLK:
             case GT_JCMP:
+            case GT_JTEST:
             case GT_JCC:
             case GT_JTRUE:
             case GT_RETURN:
@@ -2105,9 +1929,9 @@ void Compiler::fgComputeLifeLIR(VARSET_TP& life, BasicBlock* block, VARSET_VALAR
             case GT_START_NONGC:
             case GT_START_PREEMPTGC:
             case GT_PROF_HOOK:
-#if !defined(FEATURE_EH_FUNCLETS)
+#if defined(FEATURE_EH_WINDOWS_X86)
             case GT_END_LFIN:
-#endif // !FEATURE_EH_FUNCLETS
+#endif // FEATURE_EH_WINDOWS_X86
             case GT_SWITCH_TABLE:
             case GT_PINVOKE_PROLOG:
             case GT_PINVOKE_EPILOG:
@@ -2115,6 +1939,7 @@ void Compiler::fgComputeLifeLIR(VARSET_TP& life, BasicBlock* block, VARSET_VALAR
             case GT_PUTARG_STK:
             case GT_IL_OFFSET:
             case GT_KEEPALIVE:
+            case GT_SWIFT_ERROR_RET:
                 // Never remove these nodes, as they are always side-effecting.
                 //
                 // NOTE: the only side-effect of some of these nodes (GT_CMP, GT_SUB_HI) is a write to the flags
@@ -2124,12 +1949,25 @@ void Compiler::fgComputeLifeLIR(VARSET_TP& life, BasicBlock* block, VARSET_VALAR
 
 #ifdef FEATURE_HW_INTRINSICS
             case GT_HWINTRINSIC:
-                // Conservative: This only removes Vector.Zero nodes, but could be expanded.
-                if (node->IsVectorZero())
+            {
+                GenTreeHWIntrinsic* hwintrinsic = node->AsHWIntrinsic();
+                NamedIntrinsic      intrinsicId = hwintrinsic->GetHWIntrinsicId();
+
+                if (hwintrinsic->OperIsMemoryStore())
                 {
-                    fgTryRemoveNonLocal(node, &blockRange);
+                    // Never remove these nodes, as they are always side-effecting.
+                    break;
                 }
+                else if (HWIntrinsicInfo::HasSpecialSideEffect(intrinsicId))
+                {
+                    // Never remove these nodes, as they are always side-effecting
+                    // or have a behavioral semantic that is undesirable to remove
+                    break;
+                }
+
+                fgTryRemoveNonLocal(node, &blockRange);
                 break;
+            }
 #endif // FEATURE_HW_INTRINSICS
 
             case GT_NO_OP:
@@ -2149,13 +1987,12 @@ void Compiler::fgComputeLifeLIR(VARSET_TP& life, BasicBlock* block, VARSET_VALAR
             break;
 
             case GT_BLK:
-            case GT_OBJ:
             {
                 bool removed = fgTryRemoveNonLocal(node, &blockRange);
                 if (!removed && node->IsUnusedValue())
                 {
-                    // IR doesn't expect dummy uses of `GT_OBJ/BLK/DYN_BLK`.
-                    JITDUMP("Transform an unused OBJ/BLK node [%06d]\n", dspTreeID(node));
+                    // IR doesn't expect dummy uses of `GT_BLK`.
+                    JITDUMP("Transform an unused BLK node [%06d]\n", dspTreeID(node));
                     Lowering::TransformUnusedIndirection(node->AsIndir(), this, block);
                 }
             }
@@ -2188,7 +2025,7 @@ bool Compiler::fgTryRemoveNonLocal(GenTree* node, LIR::Range* blockRange)
     {
         // We are only interested in avoiding the removal of nodes with direct side effects
         // (as opposed to side effects of their children).
-        // This default case should never include calls or assignments.
+        // This default case should never include calls or stores.
         assert(!node->OperRequiresAsgFlag() && !node->OperIs(GT_CALL));
         if (!node->gtSetFlags() && !node->OperMayThrow(this))
         {
@@ -2200,9 +2037,8 @@ bool Compiler::fgTryRemoveNonLocal(GenTree* node, LIR::Range* blockRange)
                 return GenTree::VisitResult::Continue;
             });
 
-            if (node->OperIs(GT_SELECTCC, GT_SETCC))
+            if (node->OperConsumesFlags() && node->gtPrev->gtSetFlags())
             {
-                assert((node->gtPrev->gtFlags & GTF_SET_FLAGS) != 0);
                 node->gtPrev->gtFlags &= ~GTF_SET_FLAGS;
             }
 
@@ -2264,11 +2100,11 @@ bool Compiler::fgTryRemoveDeadStoreLIR(GenTree* store, GenTreeLclVarCommon* lclN
 // Return Value:
 //   true if we should skip the rest of the statement, false if we should continue
 //
-bool Compiler::fgRemoveDeadStore(GenTree**        pTree,
-                                 LclVarDsc*       varDsc,
-                                 VARSET_VALARG_TP life,
-                                 bool*            doAgain,
-                                 bool*            pStmtInfoDirty,
+bool Compiler::fgRemoveDeadStore(GenTree**           pTree,
+                                 LclVarDsc*          varDsc,
+                                 VARSET_VALARG_TP    life,
+                                 bool*               doAgain,
+                                 bool*               pStmtInfoDirty,
                                  bool* pStoreRemoved DEBUGARG(bool* treeModf))
 {
     assert(!compRationalIRForm);
@@ -2276,63 +2112,49 @@ bool Compiler::fgRemoveDeadStore(GenTree**        pTree,
     // Vars should have already been checked for address exposure by this point.
     assert(!varDsc->IsAddressExposed());
 
-    GenTree*       asgNode  = nullptr;
-    GenTree* const tree     = *pTree;
-    GenTree*       nextNode = tree->gtNext;
+    GenTree* const tree = *pTree;
 
-    // We can have two types of assignments: ASG(LCL_VAR/FLD, ...), in which case the assignment must have
-    // been reversed, so it is [RHS, LCL_VAR/FLD, ASG] in linear order, or we have a call, in which case we
-    // bail (we most likely cannot remove the call anyway).
-    if (tree->OperIs(GT_LCL_VAR, GT_LCL_FLD))
+    // We can have two types of stores: STORE_LCL_VAR/STORE_LCL_FLD, ...) or a call,
+    // in which case we bail (we most likely cannot remove the call anyway).
+    if (!tree->OperIsLocalStore())
     {
-        assert((tree->gtFlags & GTF_VAR_DEF) != 0);
-        assert(nextNode != nullptr);
-
-        if (nextNode->OperIs(GT_ASG) && (tree == nextNode->gtGetOp1()))
-        {
-            asgNode = nextNode;
-        }
-    }
-
-    *pStoreRemoved = false;
-
-    if (asgNode == nullptr)
-    {
+        *pStoreRemoved = false;
         return false;
     }
-
-    GenTree* rhsNode = asgNode->gtGetOp2();
 
     // We are now committed to removing the store.
     *pStoreRemoved = true;
 
-    // Check for side effects on the RHS.
+    GenTreeLclVarCommon* store = tree->AsLclVarCommon();
+    GenTree*             value = store->Data();
+
+    // Check for side effects.
     GenTree* sideEffList = nullptr;
-    if (rhsNode->gtFlags & GTF_SIDE_EFFECT)
+    if ((value->gtFlags & GTF_SIDE_EFFECT) != 0)
     {
 #ifdef DEBUG
         if (verbose)
         {
-            printf(FMT_BB " - Dead assignment has side effects...\n", compCurBB->bbNum);
-            gtDispTree(asgNode);
+            printf(FMT_BB " - Dead store has side effects...\n", compCurBB->bbNum);
+            gtDispTree(store);
             printf("\n");
         }
 #endif // DEBUG
 
-        gtExtractSideEffList(rhsNode, &sideEffList);
+        gtExtractSideEffList(value, &sideEffList);
     }
 
     // Test for interior statement
-    if (asgNode->gtNext == nullptr)
+    if (store->gtNext == nullptr)
     {
-        // This is a "NORMAL" statement with the assignment node hanging from the statement.
+        // This is a "NORMAL" statement with the store node hanging from the statement.
 
-        noway_assert(compCurStmt->GetRootNode() == asgNode);
-        JITDUMP("top level assign\n");
+        noway_assert(compCurStmt->GetRootNode() == store);
+        JITDUMP("top level store\n");
 
         if (sideEffList != nullptr)
         {
-            noway_assert(sideEffList->gtFlags & GTF_SIDE_EFFECT);
+            noway_assert((sideEffList->gtFlags & GTF_SIDE_EFFECT) != 0);
 #ifdef DEBUG
             if (verbose)
             {
@@ -2342,14 +2164,13 @@ bool Compiler::fgRemoveDeadStore(GenTree**        pTree,
             }
 #endif // DEBUG
 
-            // Replace the assignment statement with the list of side effects
-
+            // Replace the store statement with the list of side effects
             *pTree = sideEffList;
             compCurStmt->SetRootNode(sideEffList);
 #ifdef DEBUG
             *treeModf = true;
 #endif // DEBUG
-            // Update ordering, costs, FP levels, etc.
+       // Update ordering, costs, FP levels, etc.
             gtSetStmtInfo(compCurStmt);
 
             // Re-link the nodes for this statement
@@ -2370,15 +2191,15 @@ bool Compiler::fgRemoveDeadStore(GenTree**        pTree,
             // No side effects - remove the whole statement from the block->bbStmtList.
             fgRemoveStmt(compCurBB, compCurStmt);
 
-            // Since we removed it do not process the rest (i.e. RHS) of the statement
-            // variables in the RHS will not be marked as live, so we get the benefit of
+            // Since we removed it do not process the rest (i.e. "data") of the statement
+            // variables in "data" will not be marked as live, so we get the benefit of
             // propagating dead variables up the chain
             return true;
         }
     }
     else
     {
-        // This is an INTERIOR STATEMENT with a dead assignment - remove it
+        // This is an INTERIOR STATEMENT with a dead store - remove it.
         // TODO-Cleanup: I'm not sure this assert is valuable; we've already determined this when
         // we computed that it was dead.
         if (varDsc->lvTracked)
@@ -2399,7 +2220,7 @@ bool Compiler::fgRemoveDeadStore(GenTree**        pTree,
 
         if (sideEffList != nullptr)
         {
-            noway_assert(sideEffList->gtFlags & GTF_SIDE_EFFECT);
+            noway_assert((sideEffList->gtFlags & GTF_SIDE_EFFECT) != 0);
 #ifdef DEBUG
             if (verbose)
             {
@@ -2408,36 +2229,25 @@ bool Compiler::fgRemoveDeadStore(GenTree**        pTree,
                 printf("\n");
             }
 #endif // DEBUG
-            if (sideEffList->gtOper == asgNode->gtOper)
-            {
+
 #ifdef DEBUG
-                *treeModf = true;
+            *treeModf = true;
 #endif // DEBUG
-                asgNode->AsOp()->gtOp1 = sideEffList->AsOp()->gtOp1;
-                asgNode->AsOp()->gtOp2 = sideEffList->AsOp()->gtOp2;
-                asgNode->gtType        = sideEffList->gtType;
+
+            // Change the node to a GT_COMMA holding the side effect list.
+            store->ChangeType(TYP_VOID);
+            store->ChangeOper(GT_COMMA);
+            store->SetAllEffectsFlags(sideEffList);
+
+            if (sideEffList->OperIs(GT_COMMA))
+            {
+                store->AsOp()->gtOp1 = sideEffList->AsOp()->gtOp1;
+                store->AsOp()->gtOp2 = sideEffList->AsOp()->gtOp2;
             }
             else
             {
-#ifdef DEBUG
-                *treeModf = true;
-#endif // DEBUG
-                // Change the node to a GT_COMMA holding the side effect list
-                asgNode->gtBashToNOP();
-
-                asgNode->ChangeOper(GT_COMMA);
-                asgNode->gtFlags |= sideEffList->gtFlags & GTF_ALL_EFFECT;
-
-                if (sideEffList->gtOper == GT_COMMA)
-                {
-                    asgNode->AsOp()->gtOp1 = sideEffList->AsOp()->gtOp1;
-                    asgNode->AsOp()->gtOp2 = sideEffList->AsOp()->gtOp2;
-                }
-                else
-                {
-                    asgNode->AsOp()->gtOp1 = sideEffList;
-                    asgNode->AsOp()->gtOp2 = gtNewNothingNode();
-                }
+                store->AsOp()->gtOp1 = sideEffList;
+                store->AsOp()->gtOp2 = gtNewNothingNode();
             }
         }
         else
@@ -2446,14 +2256,14 @@ bool Compiler::fgRemoveDeadStore(GenTree**        pTree,
             if (verbose)
             {
                 printf("\nRemoving tree ");
-                printTreeID(asgNode);
+                printTreeID(store);
                 printf(" in " FMT_BB " as useless\n", compCurBB->bbNum);
-                gtDispTree(asgNode);
+                gtDispTree(store);
                 printf("\n");
             }
 #endif // DEBUG
-            // No side effects - Change the assignment to a GT_NOP node
-            asgNode->gtBashToNOP();
+       // No side effects - Change the store to a GT_NOP node
+            store->gtBashToNOP();
 
 #ifdef DEBUG
             *treeModf = true;
@@ -2472,8 +2282,7 @@ bool Compiler::fgRemoveDeadStore(GenTree**        pTree,
         fgSetStmtSeq(compCurStmt);
 
         // Continue analysis from this node
-
-        *pTree = asgNode;
+        *pTree = store;
 
         return false;
     }
@@ -2542,7 +2351,7 @@ void Compiler::fgInterBlockLocalVarLiveness()
         {
             // Get the set of live variables on exit from an exception region.
             VarSetOps::UnionD(this, exceptVars, block->bbLiveOut);
-            if (block->bbJumpKind == BBJ_EHFINALLYRET)
+            if (block->KindIs(BBJ_EHFINALLYRET))
             {
                 // Live on exit from finally.
                 // We track these separately because, in addition to having EH live-out semantics,
@@ -2610,6 +2419,8 @@ void Compiler::fgInterBlockLocalVarLiveness()
      * Now fill in liveness info within each basic block - Backward DataFlow
      */
 
+    VARSET_TP volatileVars(VarSetOps::MakeEmpty(this));
+
     for (BasicBlock* const block : Blocks())
     {
         /* Tell everyone what block we're working on */
@@ -2618,12 +2429,12 @@ void Compiler::fgInterBlockLocalVarLiveness()
 
         /* Remember those vars live on entry to exception handlers */
         /* if we are part of a try block */
+        VarSetOps::ClearD(this, volatileVars);
 
-        VARSET_TP volatileVars(VarSetOps::MakeEmpty(this));
-
-        if (ehBlockHasExnFlowDsc(block))
+        if (block->HasPotentialEHSuccs(this))
         {
-            VarSetOps::Assign(this, volatileVars, fgGetHandlerLiveVars(block));
+            MemoryKindSet memoryLiveness = 0;
+            fgAddHandlerLiveVars(block, volatileVars, memoryLiveness);
 
             // volatileVars is a subset of exceptVars
             noway_assert(VarSetOps::IsSubset(this, volatileVars, exceptVars));
@@ -2717,7 +2528,7 @@ void Compiler::fgInterBlockLocalVarLiveness()
                 {
                     for (GenTree* cur = stmt->GetTreeListEnd(); cur != nullptr;)
                     {
-                        assert(cur->OperIsLocal() || cur->OperIsLocalAddr());
+                        assert(cur->OperIsAnyLocal());
                         bool isDef = ((cur->gtFlags & GTF_VAR_DEF) != 0) && ((cur->gtFlags & GTF_VAR_USEASG) == 0);
                         bool conditional = cur != dst;
                         // Ignore conditional defs that would otherwise
@@ -2743,7 +2554,7 @@ void Compiler::fgInterBlockLocalVarLiveness()
                 {
                     for (GenTree* cur = stmt->GetTreeListEnd(); cur != nullptr;)
                     {
-                        assert(cur->OperIsLocal() || cur->OperIsLocalAddr());
+                        assert(cur->OperIsAnyLocal());
                         if (!fgComputeLifeLocal(life, keepAliveVars, cur))
                         {
                             cur = cur->gtPrev;

@@ -2,6 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.Buffers;
+using System.Buffers.Binary;
 using System.Diagnostics;
 using System.IO;
 using System.Net.WebSockets.Compression;
@@ -26,7 +27,7 @@ namespace System.Net.WebSockets
     /// </remarks>
     internal sealed partial class ManagedWebSocket : WebSocket
     {
-        /// <summary>Encoding for the payload of text messages: UTF8 encoding that throws if invalid bytes are discovered, per the RFC.</summary>
+        /// <summary>Encoding for the payload of text messages: UTF-8 encoding that throws if invalid bytes are discovered, per the RFC.</summary>
         private static readonly UTF8Encoding s_textEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
 
         /// <summary>Valid states to be in when calling SendAsync.</summary>
@@ -61,7 +62,7 @@ namespace System.Net.WebSockets
         /// <summary>Buffer used for reading data from the network.</summary>
         private readonly Memory<byte> _receiveBuffer;
         /// <summary>
-        /// Tracks the state of the validity of the UTF8 encoding of text payloads.  Text may be split across fragments.
+        /// Tracks the state of the validity of the UTF-8 encoding of text payloads.  Text may be split across fragments.
         /// </summary>
         private readonly Utf8MessageState _utf8TextState = new Utf8MessageState();
         /// <summary>
@@ -213,12 +214,35 @@ namespace System.Net.WebSockets
                 _disposed = true;
                 _keepAliveTimer?.Dispose();
                 _stream.Dispose();
-                _inflater?.Dispose();
-                _deflater?.Dispose();
 
                 if (_state < WebSocketState.Aborted)
                 {
                     _state = WebSocketState.Closed;
+                }
+
+                DisposeSafe(_inflater, _receiveMutex);
+                DisposeSafe(_deflater, _sendMutex);
+            }
+        }
+
+        private static void DisposeSafe(IDisposable? resource, AsyncMutex mutex)
+        {
+            if (resource is not null)
+            {
+                Task lockTask = mutex.EnterAsync(CancellationToken.None);
+
+                if (lockTask.IsCompleted)
+                {
+                    resource.Dispose();
+                    mutex.Exit();
+                }
+                else
+                {
+                    lockTask.GetAwaiter().UnsafeOnCompleted(() =>
+                    {
+                        resource.Dispose();
+                        mutex.Exit();
+                    });
                 }
             }
         }
@@ -265,7 +289,7 @@ namespace System.Net.WebSockets
             }
             catch (Exception exc)
             {
-                return new ValueTask(Task.FromException(exc));
+                return ValueTask.FromException(exc);
             }
 
             bool endOfMessage = messageFlags.HasFlag(WebSocketMessageFlags.EndOfMessage);
@@ -443,10 +467,10 @@ namespace System.Net.WebSockets
             }
             catch (Exception exc)
             {
-                return new ValueTask(Task.FromException(
+                return ValueTask.FromException(
                     exc is OperationCanceledException ? exc :
                     _state == WebSocketState.Aborted ? CreateOperationCanceledException(exc) :
-                    new WebSocketException(WebSocketError.ConnectionClosedPrematurely, exc)));
+                    new WebSocketException(WebSocketError.ConnectionClosedPrematurely, exc));
             }
             finally
             {
@@ -470,7 +494,7 @@ namespace System.Net.WebSockets
                     await _stream.FlushAsync().ConfigureAwait(false);
                 }
             }
-            catch (Exception exc) when (!(exc is OperationCanceledException))
+            catch (Exception exc) when (exc is not OperationCanceledException)
             {
                 throw _state == WebSocketState.Aborted ?
                     CreateOperationCanceledException(exc) :
@@ -495,7 +519,7 @@ namespace System.Net.WebSockets
                     await _stream.FlushAsync(cancellationToken).ConfigureAwait(false);
                 }
             }
-            catch (Exception exc) when (!(exc is OperationCanceledException))
+            catch (Exception exc) when (exc is not OperationCanceledException)
             {
                 throw _state == WebSocketState.Aborted ?
                     CreateOperationCanceledException(exc, cancellationToken) :
@@ -511,6 +535,8 @@ namespace System.Net.WebSockets
         /// <summary>Writes a frame into the send buffer, which can then be sent over the network.</summary>
         private int WriteFrameToSendBuffer(MessageOpcode opcode, bool endOfMessage, bool disableCompression, ReadOnlySpan<byte> payloadBuffer)
         {
+            ObjectDisposedException.ThrowIf(_disposed, typeof(WebSocket));
+
             if (_deflater is not null && !disableCompression)
             {
                 payloadBuffer = _deflater.Deflate(payloadBuffer, endOfMessage);
@@ -624,19 +650,13 @@ namespace System.Net.WebSockets
             else if (payload.Length <= ushort.MaxValue)
             {
                 sendBuffer[1] = 126;
-                sendBuffer[2] = (byte)(payload.Length / 256);
-                sendBuffer[3] = unchecked((byte)payload.Length);
+                BinaryPrimitives.WriteUInt16BigEndian(sendBuffer.AsSpan(2), (ushort)payload.Length);
                 maskOffset = 2 + sizeof(ushort); // additional 2 bytes for 16-bit length
             }
             else
             {
                 sendBuffer[1] = 127;
-                int length = payload.Length;
-                for (int i = 9; i >= 2; i--)
-                {
-                    sendBuffer[i] = unchecked((byte)length);
-                    length /= 256;
-                }
+                BinaryPrimitives.WriteUInt64BigEndian(sendBuffer.AsSpan(2), (ulong)payload.Length);
                 maskOffset = 2 + sizeof(ulong); // additional 8 bytes for 64-bit length
             }
 
@@ -682,6 +702,8 @@ namespace System.Net.WebSockets
                 await _receiveMutex.EnterAsync(cancellationToken).ConfigureAwait(false);
                 try
                 {
+                    ObjectDisposedException.ThrowIf(_disposed, typeof(WebSocket));
+
                     while (true) // in case we get control frames that should be ignored from the user's perspective
                     {
                         // Get the last received header.  If its payload length is non-zero, that means we previously
@@ -697,6 +719,21 @@ namespace System.Net.WebSockets
                                 // Make sure we have the first two bytes, which includes the start of the payload length.
                                 if (_receiveBufferCount < 2)
                                 {
+                                    if (payloadBuffer.IsEmpty)
+                                    {
+                                        // The caller has issued a zero-byte read.  The only meaningful reason to do that is to
+                                        // wait for data to be available without actually consuming any of it. If we just pass down
+                                        // our internal buffer, the underlying stream might end up renting and/or pinning a buffer
+                                        // for the duration of the operation, which isn't necessary when we don't actually want to
+                                        // consume anything. Instead, we issue a zero-byte read against the underlying stream;
+                                        // given that the receive buffer currently stores fewer than the minimum number of bytes
+                                        // necessary for a header, it's safe to issue a read (if there were at least the minimum
+                                        // number of bytes available, we could end up issuing a read that would erroneously wait
+                                        // for data that would never arrive). Once that read completes, we can proceed with any
+                                        // other reads necessary, and they'll have a reduced chance of pinning the receive buffer.
+                                        await _stream.ReadAsync(Memory<byte>.Empty, cancellationToken).ConfigureAwait(false);
+                                    }
+
                                     await EnsureBufferContainsAsync(2, cancellationToken).ConfigureAwait(false);
                                 }
 
@@ -934,7 +971,7 @@ namespace System.Net.WebSockets
                     ApplyMask(_receiveBuffer.Span.Slice(_receiveBufferOffset, (int)header.PayloadLength), header.Mask, 0);
                 }
 
-                closeStatus = (WebSocketCloseStatus)(_receiveBuffer.Span[_receiveBufferOffset] << 8 | _receiveBuffer.Span[_receiveBufferOffset + 1]);
+                closeStatus = (WebSocketCloseStatus)BinaryPrimitives.ReadUInt16BigEndian(_receiveBuffer.Span.Slice(_receiveBufferOffset));
                 if (!IsValidCloseStatus(closeStatus))
                 {
                     await CloseWithReceiveErrorAndThrowAsync(WebSocketCloseStatus.ProtocolError, WebSocketError.Faulted).ConfigureAwait(false);
@@ -1116,17 +1153,13 @@ namespace System.Net.WebSockets
             if (header.PayloadLength == 126)
             {
                 Debug.Assert(_receiveBufferCount >= 2, "Expected to have two bytes for the payload length.");
-                header.PayloadLength = (receiveBufferSpan[_receiveBufferOffset] << 8) | receiveBufferSpan[_receiveBufferOffset + 1];
+                header.PayloadLength = BinaryPrimitives.ReadUInt16BigEndian(receiveBufferSpan.Slice(_receiveBufferOffset));
                 ConsumeFromBuffer(2);
             }
             else if (header.PayloadLength == 127)
             {
                 Debug.Assert(_receiveBufferCount >= 8, "Expected to have eight bytes for the payload length.");
-                header.PayloadLength = 0;
-                for (int i = 0; i < 8; i++)
-                {
-                    header.PayloadLength = (header.PayloadLength << 8) | receiveBufferSpan[_receiveBufferOffset + i];
-                }
+                header.PayloadLength = BinaryPrimitives.ReadInt64BigEndian(receiveBufferSpan.Slice(_receiveBufferOffset));
                 ConsumeFromBuffer(8);
             }
 
@@ -1266,7 +1299,6 @@ namespace System.Net.WebSockets
                                 {
                                     receiveTask = ReceiveAsyncPrivate<ValueWebSocketReceiveResult>(closeBuffer, cancellationToken);
                                 }
-
                             }
                             finally
                             {
@@ -1322,9 +1354,7 @@ namespace System.Net.WebSockets
                     Debug.Assert(count - 2 == encodedLength, $"{nameof(s_textEncoding.GetByteCount)} and {nameof(s_textEncoding.GetBytes)} encoded count didn't match");
                 }
 
-                ushort closeStatusValue = (ushort)closeStatus;
-                buffer[0] = (byte)(closeStatusValue >> 8);
-                buffer[1] = (byte)(closeStatusValue & 0xFF);
+                BinaryPrimitives.WriteUInt16BigEndian(buffer, (ushort)closeStatus);
 
                 await SendFrameAsync(MessageOpcode.Close, endOfMessage: true, disableCompression: true, new Memory<byte>(buffer, 0, count), cancellationToken).ConfigureAwait(false);
             }
@@ -1451,61 +1481,26 @@ namespace System.Net.WebSockets
             {
                 byte* toMaskPtr = toMaskBeg;
                 byte* toMaskEnd = toMaskBeg + toMask.Length;
-                byte* maskPtr = (byte*)&mask;
 
                 if (toMaskEnd - toMaskPtr >= sizeof(int))
                 {
-                    // align our pointer to sizeof(int)
+                    int rolledMask = BitConverter.IsLittleEndian ?
+                        (int)BitOperations.RotateRight((uint)mask, maskIndex * 8) :
+                        (int)BitOperations.RotateLeft((uint)mask, maskIndex * 8);
 
-                    while ((ulong)toMaskPtr % sizeof(int) != 0)
+                    // Process Vector<byte>.Count bytes at a time.
+                    if (Vector.IsHardwareAccelerated && (toMaskEnd - toMaskPtr) >= Vector<byte>.Count)
                     {
-                        Debug.Assert(toMaskPtr < toMaskEnd);
-
-                        *toMaskPtr++ ^= maskPtr[maskIndex];
-                        maskIndex = (maskIndex + 1) & 3;
-                    }
-
-                    int rolledMask;
-                    if (BitConverter.IsLittleEndian)
-                    {
-                        rolledMask = (int)BitOperations.RotateRight((uint)mask, maskIndex * 8);
-                    }
-                    else
-                    {
-                        rolledMask = (int)BitOperations.RotateLeft((uint)mask, maskIndex * 8);
-                    }
-
-                    // use SIMD if possible.
-
-                    if (Vector.IsHardwareAccelerated && Vector<byte>.Count % sizeof(int) == 0 && (toMaskEnd - toMaskPtr) >= Vector<byte>.Count)
-                    {
-                        // align our pointer to Vector<byte>.Count
-
-                        while ((ulong)toMaskPtr % (uint)Vector<byte>.Count != 0)
+                        Vector<byte> maskVector = Vector.AsVectorByte(new Vector<int>(rolledMask));
+                        do
                         {
-                            Debug.Assert(toMaskPtr < toMaskEnd);
-
-                            *(int*)toMaskPtr ^= rolledMask;
-                            toMaskPtr += sizeof(int);
+                            *(Vector<byte>*)toMaskPtr ^= maskVector;
+                            toMaskPtr += Vector<byte>.Count;
                         }
-
-                        // use SIMD.
-
-                        if (toMaskEnd - toMaskPtr >= Vector<byte>.Count)
-                        {
-                            Vector<byte> maskVector = Vector.AsVectorByte(new Vector<int>(rolledMask));
-
-                            do
-                            {
-                                *(Vector<byte>*)toMaskPtr ^= maskVector;
-                                toMaskPtr += Vector<byte>.Count;
-                            }
-                            while (toMaskEnd - toMaskPtr >= Vector<byte>.Count);
-                        }
+                        while (toMaskEnd - toMaskPtr >= Vector<byte>.Count);
                     }
 
-                    // process remaining data (or all, if couldn't use SIMD) 4 bytes at a time.
-
+                    // Process 4 bytes at a time.
                     while (toMaskEnd - toMaskPtr >= sizeof(int))
                     {
                         *(int*)toMaskPtr ^= rolledMask;
@@ -1513,8 +1508,8 @@ namespace System.Net.WebSockets
                     }
                 }
 
-                // do any remaining data a byte at a time.
-
+                // Process 1 byte at a time.
+                byte* maskPtr = (byte*)&mask;
                 while (toMaskPtr != toMaskEnd)
                 {
                     *toMaskPtr++ ^= maskPtr[maskIndex];

@@ -1,19 +1,19 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System.Reflection;
 using System;
-using System.Xml.Schema;
 using System.Collections;
 using System.Collections.Generic;
 using System.ComponentModel;
-using System.Globalization;
-using System.Threading;
 using System.Diagnostics;
-using System.Xml;
-using System.Xml.Serialization;
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
+using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Threading;
+using System.Xml;
+using System.Xml.Schema;
+using System.Xml.Serialization;
 
 namespace System.Xml.Serialization
 {
@@ -207,7 +207,7 @@ namespace System.Xml.Serialization
         public XmlMembersMapping ImportMembersMapping(string? elementName, string? ns, XmlReflectionMember[] members, bool hasWrapperElement, bool rpc, bool openModel, XmlMappingAccess access)
         {
             ElementAccessor element = new ElementAccessor();
-            element.Name = elementName == null || elementName.Length == 0 ? elementName : XmlConvert.EncodeLocalName(elementName);
+            element.Name = string.IsNullOrEmpty(elementName) ? elementName : XmlConvert.EncodeLocalName(elementName);
             element.Namespace = ns;
 
             MembersMapping membersMapping = ImportMembersMapping(members, ns, hasWrapperElement, rpc, openModel, new RecursionLimiter());
@@ -696,7 +696,7 @@ namespace System.Xml.Serialization
         private TypeMapping? GetTypeMapping(string? typeName, string? ns, TypeDesc typeDesc, NameTable typeLib, Type? type)
         {
             TypeMapping? mapping;
-            if (typeName == null || typeName.Length == 0)
+            if (string.IsNullOrEmpty(typeName))
                 mapping = type == null ? null : (TypeMapping?)_anonymous[type];
             else
                 mapping = (TypeMapping?)typeLib[typeName, ns];

@@ -4,98 +4,12 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
-using System.Runtime.InteropServices;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using CultureInfo = System.Globalization.CultureInfo;
 
 namespace System.Reflection.Emit
 {
-    public abstract partial class TypeBuilder
-    {
-        #region Public Static Methods
-        [UnconditionalSuppressMessage("ReflectionAnalysis", "IL2055:UnrecognizedReflectionPattern",
-            Justification = "MakeGenericType is only called on a TypeBuilder which is not subject to trimming")]
-        public static MethodInfo GetMethod(Type type, MethodInfo method)
-        {
-            if (type is not TypeBuilder && type is not TypeBuilderInstantiation)
-                throw new ArgumentException(SR.Argument_MustBeTypeBuilder, nameof(type));
-
-            // The following checks establishes invariants that more simply put require type to be generic and
-            // method to be a generic method definition declared on the generic type definition of type.
-            // To create generic method G<Foo>.M<Bar> these invariants require that G<Foo>.M<S> be created by calling
-            // this function followed by MakeGenericMethod on the resulting MethodInfo to finally get G<Foo>.M<Bar>.
-            // We could also allow G<T>.M<Bar> to be created before G<Foo>.M<Bar> (BindGenParm followed by this method)
-            // if we wanted to but that just complicates things so these checks are designed to prevent that scenario.
-
-            if (method.IsGenericMethod && !method.IsGenericMethodDefinition)
-                throw new ArgumentException(SR.Argument_NeedGenericMethodDefinition, nameof(method));
-
-            if (method.DeclaringType == null || !method.DeclaringType.IsGenericTypeDefinition)
-                throw new ArgumentException(SR.Argument_MethodNeedGenericDeclaringType, nameof(method));
-
-            if (type.GetGenericTypeDefinition() != method.DeclaringType)
-                throw new ArgumentException(SR.Argument_InvalidMethodDeclaringType, nameof(type));
-
-            // The following converts from Type or TypeBuilder of G<T> to TypeBuilderInstantiation G<T>. These types
-            // both logically represent the same thing. The runtime displays a similar convention by having
-            // G<M>.M() be encoded by a typeSpec whose parent is the typeDef for G<M> and whose instantiation is also G<M>.
-            if (type.IsGenericTypeDefinition)
-                type = type.MakeGenericType(type.GetGenericArguments());
-
-            if (type is not TypeBuilderInstantiation typeBuilderInstantiation)
-                throw new ArgumentException(SR.Argument_NeedNonGenericType, nameof(type));
-
-            return MethodOnTypeBuilderInstantiation.GetMethod(method, typeBuilderInstantiation);
-        }
-
-        [UnconditionalSuppressMessage("ReflectionAnalysis", "IL2055:UnrecognizedReflectionPattern",
-            Justification = "MakeGenericType is only called on a TypeBuilder which is not subject to trimming")]
-        public static ConstructorInfo GetConstructor(Type type, ConstructorInfo constructor)
-        {
-            if (type is not TypeBuilder && type is not TypeBuilderInstantiation)
-                throw new ArgumentException(SR.Argument_MustBeTypeBuilder, nameof(type));
-
-            if (!constructor.DeclaringType!.IsGenericTypeDefinition)
-                throw new ArgumentException(SR.Argument_ConstructorNeedGenericDeclaringType, nameof(constructor));
-
-            if (type.GetGenericTypeDefinition() != constructor.DeclaringType)
-                throw new ArgumentException(SR.Argument_InvalidConstructorDeclaringType, nameof(type));
-
-            // TypeBuilder G<T> ==> TypeBuilderInstantiation G<T>
-            if (type.IsGenericTypeDefinition)
-                type = type.MakeGenericType(type.GetGenericArguments());
-
-            if (type is not TypeBuilderInstantiation typeBuilderInstantiation)
-                throw new ArgumentException(SR.Argument_NeedNonGenericType, nameof(type));
-
-            return ConstructorOnTypeBuilderInstantiation.GetConstructor(constructor, typeBuilderInstantiation);
-        }
-
-        [UnconditionalSuppressMessage("ReflectionAnalysis", "IL2055:UnrecognizedReflectionPattern",
-            Justification = "MakeGenericType is only called on a TypeBuilder which is not subject to trimming")]
-        public static FieldInfo GetField(Type type, FieldInfo field)
-        {
-            if (type is not TypeBuilder and not TypeBuilderInstantiation)
-                throw new ArgumentException(SR.Argument_MustBeTypeBuilder, nameof(type));
-
-            if (!field.DeclaringType!.IsGenericTypeDefinition)
-                throw new ArgumentException(SR.Argument_FieldNeedGenericDeclaringType, nameof(field));
-
-            if (type.GetGenericTypeDefinition() != field.DeclaringType)
-                throw new ArgumentException(SR.Argument_InvalidFieldDeclaringType, nameof(type));
-
-            // TypeBuilder G<T> ==> TypeBuilderInstantiation G<T>
-            if (type.IsGenericTypeDefinition)
-                type = type.MakeGenericType(type.GetGenericArguments());
-
-            if (type is not TypeBuilderInstantiation typeBuilderInstantiation)
-                throw new ArgumentException(SR.Argument_NeedNonGenericType, nameof(type));
-
-            return FieldOnTypeBuilderInstantiation.GetField(field, typeBuilderInstantiation);
-        }
-        #endregion
-    }
-
     internal sealed partial class RuntimeTypeBuilder : TypeBuilder
     {
         public override bool IsAssignableFrom([NotNullWhen(true)] TypeInfo? typeInfo)
@@ -111,13 +25,12 @@ namespace System.Reflection.Emit
             private readonly byte[]? m_binaryAttribute;
             private readonly CustomAttributeBuilder? m_customBuilder;
 
-            public CustAttr(ConstructorInfo con, byte[] binaryAttribute)
+            public CustAttr(ConstructorInfo con, ReadOnlySpan<byte> binaryAttribute)
             {
                 ArgumentNullException.ThrowIfNull(con);
-                ArgumentNullException.ThrowIfNull(binaryAttribute);
 
                 m_con = con;
-                m_binaryAttribute = binaryAttribute;
+                m_binaryAttribute = binaryAttribute.ToArray();
             }
 
             public CustAttr(CustomAttributeBuilder customBuilder)
@@ -173,21 +86,13 @@ namespace System.Reflection.Emit
 
         [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "TypeBuilder_DefineCustomAttribute")]
         private static partial void DefineCustomAttribute(QCallModule module, int tkAssociate, int tkConstructor,
-            byte[]? attr, int attrLength);
+            ReadOnlySpan<byte> attr, int attrLength);
 
         internal static void DefineCustomAttribute(RuntimeModuleBuilder module, int tkAssociate, int tkConstructor,
-            byte[]? attr)
+            ReadOnlySpan<byte> attr)
         {
-            byte[]? localAttr = null;
-
-            if (attr != null)
-            {
-                localAttr = new byte[attr.Length];
-                Buffer.BlockCopy(attr, 0, localAttr, 0, attr.Length);
-            }
-
             DefineCustomAttribute(new QCallModule(ref module), tkAssociate, tkConstructor,
-                localAttr, (localAttr != null) ? localAttr.Length : 0);
+                attr, attr.Length);
         }
 
         [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "TypeBuilder_DefineProperty", StringMarshalling = StringMarshalling.Utf16)]
@@ -240,9 +145,9 @@ namespace System.Reflection.Emit
             Type? runtimeType2;
 
             // set up the runtimeType and TypeBuilder type corresponding to t1 and t2
-            if (t1 is RuntimeTypeBuilder)
+            if (t1 is RuntimeTypeBuilder rtb1)
             {
-                tb1 = (RuntimeTypeBuilder)t1;
+                tb1 = rtb1;
                 // This will be null if it is not baked.
                 runtimeType1 = tb1.m_bakedRuntimeType;
             }
@@ -251,9 +156,9 @@ namespace System.Reflection.Emit
                 runtimeType1 = t1;
             }
 
-            if (t2 is RuntimeTypeBuilder)
+            if (t2 is RuntimeTypeBuilder rtb2)
             {
-                tb2 = (RuntimeTypeBuilder)t2;
+                tb2 = rtb2;
                 // This will be null if it is not baked.
                 runtimeType2 = tb2.m_bakedRuntimeType;
             }
@@ -500,14 +405,11 @@ namespace System.Reflection.Emit
             int[]? interfaceTokens = null;
             if (interfaces != null)
             {
+                interfaceTokens = new int[interfaces.Length + 1];
                 for (i = 0; i < interfaces.Length; i++)
                 {
                     // cannot contain null in the interface list
                     ArgumentNullException.ThrowIfNull(interfaces[i], nameof(interfaces));
-                }
-                interfaceTokens = new int[interfaces.Length + 1];
-                for (i = 0; i < interfaces.Length; i++)
-                {
                     interfaceTokens[i] = m_module.GetTypeTokenInternal(interfaces[i]);
                 }
             }
@@ -586,7 +488,7 @@ namespace System.Reflection.Emit
                 typeAttributes = TypeAttributes.Public | TypeAttributes.ExplicitLayout | TypeAttributes.Class | TypeAttributes.Sealed | TypeAttributes.AnsiClass;
 
                 // Define the backing value class
-                valueClassType = m_module.DefineType(strValueClassName, typeAttributes, typeof(System.ValueType), PackingSize.Size1, size);
+                valueClassType = m_module.DefineType(strValueClassName, typeAttributes, typeof(ValueType), PackingSize.Size1, size);
                 valueClassType.CreateType();
             }
 
@@ -670,7 +572,7 @@ namespace System.Reflection.Emit
             m_genParamAttributes = genericParameterAttributes;
         }
 
-        internal void SetGenParamCustomAttribute(ConstructorInfo con, byte[] binaryAttribute)
+        internal void SetGenParamCustomAttribute(ConstructorInfo con, ReadOnlySpan<byte> binaryAttribute)
         {
             CustAttr ca = new CustAttr(con, binaryAttribute);
 
@@ -839,7 +741,7 @@ namespace System.Reflection.Emit
 
             if (m_typeInterfaces == null)
             {
-                return Type.EmptyTypes;
+                return EmptyTypes;
             }
 
             return m_typeInterfaces.ToArray();
@@ -1073,29 +975,6 @@ namespace System.Reflection.Emit
             }
         }
 
-        public override Type MakePointerType()
-        {
-            return SymbolType.FormCompoundType("*", this, 0)!;
-        }
-
-        public override Type MakeByRefType()
-        {
-            return SymbolType.FormCompoundType("&", this, 0)!;
-        }
-
-        [RequiresDynamicCode("The code for an array of the specified type might not be available.")]
-        public override Type MakeArrayType()
-        {
-            return SymbolType.FormCompoundType("[]", this, 0)!;
-        }
-
-        [RequiresDynamicCode("The code for an array of the specified type might not be available.")]
-        public override Type MakeArrayType(int rank)
-        {
-            string s = GetRankString(rank);
-            return SymbolType.FormCompoundType(s, this, 0)!;
-        }
-
         #endregion
 
         #region ICustomAttributeProvider Implementation
@@ -1153,27 +1032,23 @@ namespace System.Reflection.Emit
 
         protected override GenericTypeParameterBuilder[] DefineGenericParametersCore(params string[] names)
         {
-            for (int i = 0; i < names.Length; i++)
-                ArgumentNullException.ThrowIfNull(names[i], nameof(names));
-
             if (m_inst != null)
+            {
                 throw new InvalidOperationException();
+            }
 
             m_inst = new RuntimeGenericTypeParameterBuilder[names.Length];
             for (int i = 0; i < names.Length; i++)
-                m_inst[i] = new RuntimeGenericTypeParameterBuilder(new RuntimeTypeBuilder(names[i], i, this));
+            {
+                string name = names[i];
+                ArgumentNullException.ThrowIfNull(name, nameof(names));
+                m_inst[i] = new RuntimeGenericTypeParameterBuilder(new RuntimeTypeBuilder(name, i, this));
+            }
 
             return m_inst;
         }
 
-        [RequiresDynamicCode("The native code for this instantiation might not be available at runtime.")]
-        [RequiresUnreferencedCode("If some of the generic arguments are annotated (either with DynamicallyAccessedMembersAttribute, or generic constraints), trimming can't validate that the requirements of those annotations are met.")]
-        public override Type MakeGenericType(params Type[] typeArguments)
-        {
-            return TypeBuilderInstantiation.MakeGenericType(this, typeArguments);
-        }
-
-        public override Type[] GetGenericArguments() => m_inst ?? Type.EmptyTypes;
+        public override Type[] GetGenericArguments() => m_inst ?? EmptyTypes;
 
         // If a TypeBuilder is generic, it must be a generic type definition
         // All instantiated generic types are TypeBuilderInstantiation.
@@ -1397,7 +1272,6 @@ namespace System.Reflection.Emit
 
             // Define the constructor Builder
             constBuilder = (RuntimeConstructorBuilder)DefineConstructor(attributes, CallingConventions.Standard, null);
-            m_constructorCount++;
 
             // generate the code to call the parent's default constructor
             ILGenerator il = constBuilder.GetILGenerator();
@@ -1748,7 +1622,7 @@ namespace System.Reflection.Emit
                     if (meth.m_ilGenerator != null)
                     {
                         // we need to bake the method here.
-                        meth.CreateMethodBodyHelper(meth.GetILGenerator());
+                        meth.CreateMethodBodyHelper(((RuntimeILGenerator)meth.GetILGenerator()));
                     }
 
                     body = meth.GetBody();
@@ -1858,14 +1732,14 @@ namespace System.Reflection.Emit
             }
         }
 
-        protected override void SetCustomAttributeCore(ConstructorInfo con, byte[] binaryAttribute)
+        internal void SetCustomAttribute(ConstructorInfo con, ReadOnlySpan<byte> binaryAttribute)
         {
-            DefineCustomAttribute(m_module, m_tdType, m_module.GetMethodMetadataToken(con), binaryAttribute);
+            SetCustomAttributeCore(con, binaryAttribute);
         }
 
-        protected override void SetCustomAttributeCore(CustomAttributeBuilder customBuilder)
+        protected override void SetCustomAttributeCore(ConstructorInfo con, ReadOnlySpan<byte> binaryAttribute)
         {
-            customBuilder.CreateCustomAttribute(m_module, m_tdType);
+            DefineCustomAttribute(m_module, m_tdType, m_module.GetMethodMetadataToken(con), binaryAttribute);
         }
 
         #endregion

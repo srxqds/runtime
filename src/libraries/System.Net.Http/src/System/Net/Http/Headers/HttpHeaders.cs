@@ -258,7 +258,7 @@ namespace System.Net.Http.Headers
                 {
                     // Note that if we get multiple values for a header that doesn't support multiple values, we'll
                     // just separate the values using a comma (default separator).
-                    string? separator = entry.Key.Parser is HttpHeaderParser parser && parser.SupportsMultipleValues ? parser.Separator : HttpHeaderParser.DefaultSeparator;
+                    string separator = entry.Key.Separator;
 
                     Debug.Assert(multiValue is not null && multiValue.Length > 0);
                     vsb.Append(multiValue[0]);
@@ -289,8 +289,7 @@ namespace System.Net.Http.Headers
 
                 // Note that if we get multiple values for a header that doesn't support multiple values, we'll
                 // just separate the values using a comma (default separator).
-                string? separator = descriptor.Parser != null && descriptor.Parser.SupportsMultipleValues ? descriptor.Parser.Separator : HttpHeaderParser.DefaultSeparator;
-                return string.Join(separator, multiValue!);
+                return string.Join(descriptor.Separator, multiValue!);
             }
 
             return string.Empty;
@@ -1027,10 +1026,7 @@ namespace System.Net.Http.Headers
 
         private HeaderDescriptor GetHeaderDescriptor(string name)
         {
-            if (string.IsNullOrEmpty(name))
-            {
-                throw new ArgumentException(SR.net_http_argument_empty_string, nameof(name));
-            }
+            ArgumentException.ThrowIfNullOrWhiteSpace(name);
 
             if (!HeaderDescriptor.TryGet(name, out HeaderDescriptor descriptor))
             {
@@ -1321,11 +1317,6 @@ namespace System.Net.Http.Headers
 
         #region Low-level implementation details that work with _headerStore directly
 
-        // Used to store the CollectionsMarshal.GetValueRefOrAddDefault out parameter.
-        // This is a workaround for the Roslyn bug where we can't use a discard instead:
-        // https://github.com/dotnet/roslyn/issues/56587#issuecomment-934955526
-        private static bool s_dictionaryGetValueRefOrAddDefaultExistsDummy;
-
         private const int InitialCapacity = 4;
         internal const int ArrayThreshold = 64; // Above this threshold, header ordering will not be preserved
 
@@ -1459,13 +1450,13 @@ namespace System.Net.Http.Headers
                     dictionary.Add(entry.Key, entry.Value);
                 }
                 Debug.Assert(dictionary.Count == _count - 1);
-                return ref CollectionsMarshal.GetValueRefOrAddDefault(dictionary, key, out s_dictionaryGetValueRefOrAddDefaultExistsDummy);
+                return ref CollectionsMarshal.GetValueRefOrAddDefault(dictionary, key, out _);
             }
 
             ref object? DictionaryGetValueRefOrAddDefault(HeaderDescriptor key)
             {
                 var dictionary = (Dictionary<HeaderDescriptor, object>)_headerStore!;
-                ref object? value = ref CollectionsMarshal.GetValueRefOrAddDefault(dictionary, key, out s_dictionaryGetValueRefOrAddDefaultExistsDummy);
+                ref object? value = ref CollectionsMarshal.GetValueRefOrAddDefault(dictionary, key, out _);
                 if (value is null)
                 {
                     _count++;

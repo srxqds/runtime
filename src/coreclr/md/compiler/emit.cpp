@@ -112,9 +112,9 @@ STDMETHODIMP RegMeta::DefineMethod(           // S_OK or error.
     // #define COR_CTOR_METHOD_NAME_W      L".ctor"
     // #define COR_CCTOR_METHOD_NAME_W     L".cctor"
 
-    if (!wcscmp(szName, W(".ctor")) || // COR_CTOR_METHOD_NAME_W
-        !wcscmp(szName, W(".cctor")) || // COR_CCTOR_METHOD_NAME_W
-        !wcsncmp(szName, W("_VtblGap"), 8) )
+    if (!u16_strcmp(szName, W(".ctor")) || // COR_CTOR_METHOD_NAME_W
+        !u16_strcmp(szName, W(".cctor")) || // COR_CCTOR_METHOD_NAME_W
+        !u16_strncmp(szName, W("_VtblGap"), 8) ) // All methods that begin with the characters "_VtblGap" are considered to be VTable Gap methods
     {
         dwMethodFlags |= mdRTSpecialName | mdSpecialName;
     }
@@ -1951,11 +1951,20 @@ STDMETHODIMP RegMeta::DefineDocument(       // S_OK or error.
         *partsIndexesPtr++ = 0;
         partsIndexesCount++;
     }
-    stringToken = strtok(docName, (const char*)delim);
+    char* context;
+#ifdef HOST_WINDOWS
+    stringToken = strtok_s(docName, (const char*)delim, &context);
+#else
+    stringToken = strtok_r(docName, (const char*)delim, &context);
+#endif
     while (stringToken != NULL)
     {
         IfFailGo(m_pStgdb->m_MiniMd.m_BlobHeap.AddBlob(MetaData::DataBlob((BYTE*)stringToken, (ULONG)strlen(stringToken)), partsIndexesPtr++));
-        stringToken = strtok(NULL, (const char*)delim);
+#ifdef HOST_WINDOWS
+        stringToken = strtok_s(NULL, (const char*)delim, &context);
+#else
+        stringToken = strtok_r(NULL, (const char*)delim, &context);
+#endif
         partsIndexesCount++;
     }
 
@@ -2608,7 +2617,7 @@ HRESULT RegMeta::DefineField(           // S_OK or error.
     // macro in the code below to work around this issue.
     // #define COR_ENUM_FIELD_NAME_W       L"value__"
 
-    if (!wcscmp(szName, W("value__")))
+    if (!u16_strcmp(szName, W("value__")))
     {
         dwFieldFlags |= fdRTSpecialName | fdSpecialName;
     }

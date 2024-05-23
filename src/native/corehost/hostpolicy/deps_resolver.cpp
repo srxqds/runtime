@@ -56,7 +56,7 @@ namespace
 
         trace::verbose(_X("Adding to %s path: %s"), deps_entry_t::s_known_asset_types[asset_type], path.c_str());
 
-        if (starts_with(path, svc_dir, false))
+        if (utils::starts_with(path, svc_dir.c_str(), svc_dir.length(), false))
         {
             serviced->append(path);
             serviced->push_back(PATH_SEPARATOR);
@@ -280,7 +280,8 @@ bool deps_resolver_t::probe_deps_entry(const deps_entry_t& entry, const pal::str
 
     for (const auto& config : m_probes)
     {
-        trace::verbose(_X("  Using probe config: %s"), config.as_str().c_str());
+        if (trace::is_enabled())
+            trace::verbose(_X("  Using probe config: %s"), config.as_str().c_str());
 
         if (config.is_servicing() && !entry.is_serviceable)
         {
@@ -425,7 +426,7 @@ bool deps_resolver_t::resolve_tpa_list(
         }
 
         // Ignore placeholders
-        if (ends_with(entry.asset.relative_path, _X("/_._"), false))
+        if (utils::ends_with(entry.asset.relative_path, _X("/_._"), false))
         {
             return true;
         }
@@ -601,14 +602,14 @@ void deps_resolver_t::init_known_entry_path(const deps_entry_t& entry, const pal
     }
 
     assert(pal::is_path_rooted(path));
-    if (m_coreclr_path.empty() && ends_with(path, DIR_SEPARATOR + pal::string_t(LIBCORECLR_NAME), false))
+    if (m_coreclr_path.empty() && utils::ends_with(path, DIR_SEPARATOR_STR LIBCORECLR_NAME, false))
     {
         m_coreclr_path = path;
         return;
     }
 }
 
-void deps_resolver_t::resolve_additional_deps(const pal::char_t* additional_deps_serialized, const deps_json_t::rid_fallback_graph_t* rid_fallback_graph)
+void deps_resolver_t::resolve_additional_deps(const pal::char_t* additional_deps_serialized, const deps_json_t::rid_resolution_options_t& rid_resolution_options)
 {
     if (!m_is_framework_dependent
         || m_host_mode == host_mode_t::libhost)
@@ -639,15 +640,14 @@ void deps_resolver_t::resolve_additional_deps(const pal::char_t* additional_deps
     while (std::getline(ss, additional_deps_path, PATH_SEPARATOR))
     {
         // If it's a single deps file, insert it in 'm_additional_deps_files'
-        if (ends_with(additional_deps_path, _X(".deps.json"), false))
+        if (utils::ends_with(additional_deps_path, _X(".deps.json"), false))
         {
             if (pal::file_exists(additional_deps_path))
             {
                 trace::verbose(_X("Using specified additional deps.json: '%s'"),
                     additional_deps_path.c_str());
 
-                m_additional_deps.push_back(std::unique_ptr<deps_json_t>(
-                    new deps_json_t(true, additional_deps_path, rid_fallback_graph)));
+                m_additional_deps.push_back(deps_json_t::create_for_framework_dependent(additional_deps_path, rid_resolution_options));
             }
             else
             {
@@ -707,8 +707,7 @@ void deps_resolver_t::resolve_additional_deps(const pal::char_t* additional_deps
                         trace::verbose(_X("Using specified additional deps.json: '%s'"),
                             json_full_path.c_str());
 
-                        m_additional_deps.push_back(std::unique_ptr<deps_json_t>(
-                            new deps_json_t(true, json_full_path, rid_fallback_graph)));
+                        m_additional_deps.push_back(deps_json_t::create_for_framework_dependent(json_full_path, rid_resolution_options));
                     }
                 }
             }
@@ -789,7 +788,7 @@ bool deps_resolver_t::resolve_probe_dirs(
         }
 
         // Ignore placeholders
-        if (ends_with(entry.asset.relative_path, _X("/_._"), false))
+        if (utils::ends_with(entry.asset.relative_path, _X("/_._"), false))
         {
             return true;
         }
@@ -810,7 +809,7 @@ bool deps_resolver_t::resolve_probe_dirs(
         {
             // For self-contained apps do not use the full package name
             // because of rid-fallback could happen (ex: CentOS falling back to RHEL)
-            if ((entry.asset.name == _X("apphost")) && ends_with(entry.library_name, _X(".Microsoft.NETCore.DotNetAppHost"), false))
+            if ((entry.asset.name == _X("apphost")) && utils::ends_with(entry.library_name, _X(".Microsoft.NETCore.DotNetAppHost"), false))
             {
                 return report_missing_assembly_in_manifest(entry, true);
             }
@@ -837,7 +836,9 @@ bool deps_resolver_t::resolve_probe_dirs(
         // App local path
         add_unique_path(asset_type, m_app_dir, &items, output, &non_serviced, core_servicing);
 
-        (void) library_exists_in_dir(m_app_dir, LIBCORECLR_NAME, &m_coreclr_path);
+        // deps_resolver treats being able to get the coreclr path as optional, so we ignore the return value here.
+        // The caller is responsible for checking whether coreclr path is set and handling as appropriate.
+        (void) file_exists_in_dir(m_app_dir, LIBCORECLR_NAME, &m_coreclr_path);
     }
 
     // Handle any additional deps.json that were specified.

@@ -3,16 +3,16 @@
 
 
 using System;
-using System.Threading;
 using System.Collections.Generic;
-using System.Runtime.InteropServices;
 using System.Reflection.Runtime.General;
-
-using Internal.Runtime.Augments;
-using Internal.Runtime.CompilerServices;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using System.Threading;
 
 using Internal.Metadata.NativeFormat;
 using Internal.NativeFormat;
+using Internal.Runtime.Augments;
+using Internal.Runtime.CompilerServices;
 using Internal.TypeSystem;
 
 using Debug = System.Diagnostics.Debug;
@@ -21,9 +21,15 @@ namespace Internal.Runtime.TypeLoader
 {
     internal class Callbacks : TypeLoaderCallbacks
     {
+        public override bool TryGetOwningTypeForMethodDictionary(IntPtr dictionary, out RuntimeTypeHandle owningType)
+        {
+            // PERF: computing NameAndSignature and the instantiation (that we discard) was useless
+            return TypeLoaderEnvironment.Instance.TryGetGenericMethodComponents(dictionary, out owningType, out _, out _);
+        }
+
         public override TypeManagerHandle GetModuleForMetadataReader(MetadataReader reader)
         {
-            return TypeLoaderEnvironment.Instance.ModuleList.GetModuleForMetadataReader(reader);
+            return ModuleList.Instance.GetModuleForMetadataReader(reader);
         }
 
         public override bool TryGetConstructedGenericTypeForComponents(RuntimeTypeHandle genericTypeDefinitionHandle, RuntimeTypeHandle[] genericTypeArgumentHandles, out RuntimeTypeHandle runtimeTypeHandle)
@@ -33,7 +39,8 @@ namespace Internal.Runtime.TypeLoader
 
         public override IntPtr GetThreadStaticGCDescForDynamicType(TypeManagerHandle typeManagerHandle, int index)
         {
-            return TypeLoaderEnvironment.Instance.GetThreadStaticGCDescForDynamicType(typeManagerHandle, (uint)index);
+            // We can use InstanceOrNull because we can't have a reference to a dynamic type without creating type loader first
+            return TypeLoaderEnvironment.InstanceOrNull.GetThreadStaticGCDescForDynamicType(typeManagerHandle, (uint)index);
         }
 
         public override IntPtr GenericLookupFromContextAndSignature(IntPtr context, IntPtr signature, out IntPtr auxResult)
@@ -109,13 +116,20 @@ namespace Internal.Runtime.TypeLoader
         [ThreadStatic]
         private static bool t_isReentrant;
 
-        public static TypeLoaderEnvironment Instance { get; } = new TypeLoaderEnvironment();
+        private static TypeLoaderEnvironment s_instance;
 
-        /// <summary>
-        /// List of loaded binary modules is typically used to locate / process various metadata blobs
-        /// and other per-module information.
-        /// </summary>
-        public readonly ModuleList ModuleList;
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private static TypeLoaderEnvironment InitializeInstance()
+        {
+            TypeLoaderEnvironment instance = new TypeLoaderEnvironment();
+            if (Interlocked.CompareExchange(ref s_instance, instance, null) == null)
+                return instance;
+            return s_instance;
+        }
+
+        public static TypeLoaderEnvironment Instance => s_instance ?? InitializeInstance();
+
+        public static TypeLoaderEnvironment InstanceOrNull => s_instance;
 
         // Cache the NativeReader in each module to avoid looking up the NativeLayoutInfo blob each
         // time we call GetNativeLayoutInfoReader(). The dictionary is a thread static variable to ensure
@@ -130,33 +144,20 @@ namespace Internal.Runtime.TypeLoader
             RuntimeAugments.InitializeLookups(new Callbacks());
         }
 
-        public TypeLoaderEnvironment()
-        {
-            ModuleList = new ModuleList();
-        }
-
         // To keep the synchronization simple, we execute all type loading under a global lock
-        private Lock _typeLoaderLock = new Lock();
+        private Lock _typeLoaderLock = new Lock(useTrivialWaits: true);
 
         public void VerifyTypeLoaderLockHeld()
         {
-            if (!_typeLoaderLock.IsAcquired)
+            if (!_typeLoaderLock.IsHeldByCurrentThread)
                 Environment.FailFast("TypeLoaderLock not held");
-        }
-
-        public void RunUnderTypeLoaderLock(Action action)
-        {
-            using (LockHolder.Hold(_typeLoaderLock))
-            {
-                action();
-            }
         }
 
         public IntPtr GenericLookupFromContextAndSignature(IntPtr context, IntPtr signature, out IntPtr auxResult)
         {
             IntPtr result;
 
-            using (LockHolder.Hold(_typeLoaderLock))
+            using (_typeLoaderLock.EnterScope())
             {
                 try
                 {
@@ -187,7 +188,7 @@ namespace Internal.Runtime.TypeLoader
         {
             if (type.RuntimeTypeHandle.IsNull())
             {
-                using (LockHolder.Hold(_typeLoaderLock))
+                using (_typeLoaderLock.EnterScope())
                 {
                     // Now that we hold the lock, we may find that existing types can now find
                     // their associated RuntimeTypeHandle. Flush the type builder states as a way
@@ -207,18 +208,6 @@ namespace Internal.Runtime.TypeLoader
             // Returned type has to have a valid type handle value
             Debug.Assert(!type.RuntimeTypeHandle.IsNull());
             return !type.RuntimeTypeHandle.IsNull();
-        }
-
-        internal TypeDesc GetConstructedTypeFromParserAndNativeLayoutContext(ref NativeParser parser, NativeLayoutInfoLoadContext nativeLayoutContext)
-        {
-            TypeDesc parsedType = nativeLayoutContext.GetType(ref parser);
-            if (parsedType == null)
-                return null;
-
-            if (!EnsureTypeHandleForType(parsedType))
-                return null;
-
-            return parsedType;
         }
 
         //
@@ -276,14 +265,6 @@ namespace Internal.Runtime.TypeLoader
         //
         // Returns the native layout info reader
         //
-        internal static unsafe NativeReader GetNativeLayoutInfoReader(NativeFormatModuleInfo module)
-        {
-            return GetNativeLayoutInfoReader(module.Handle);
-        }
-
-        //
-        // Returns the native layout info reader
-        //
         internal static unsafe NativeReader GetNativeLayoutInfoReader(RuntimeSignature signature)
         {
             Debug.Assert(signature.IsNativeLayoutSignature);
@@ -322,23 +303,50 @@ namespace Internal.Runtime.TypeLoader
             return result;
         }
 
-        private static RuntimeTypeHandle[] TypeDescsToRuntimeHandles(Instantiation types)
-        {
-            var result = new RuntimeTypeHandle[types.Length];
-            for (int i = 0; i < types.Length; i++)
-                result[i] = types[i].RuntimeTypeHandle;
-
-            return result;
-        }
-
         public bool TryGetConstructedGenericTypeForComponents(RuntimeTypeHandle genericTypeDefinitionHandle, RuntimeTypeHandle[] genericTypeArgumentHandles, out RuntimeTypeHandle runtimeTypeHandle)
         {
             if (TryLookupConstructedGenericTypeForComponents(genericTypeDefinitionHandle, genericTypeArgumentHandles, out runtimeTypeHandle))
                 return true;
 
-            using (LockHolder.Hold(_typeLoaderLock))
+            using (_typeLoaderLock.EnterScope())
             {
                 return TypeBuilder.TryBuildGenericType(genericTypeDefinitionHandle, genericTypeArgumentHandles, out runtimeTypeHandle);
+            }
+        }
+
+        public bool TryGetFunctionPointerTypeForComponents(RuntimeTypeHandle returnTypeHandle, RuntimeTypeHandle[] parameterHandles, bool isUnmanaged, out RuntimeTypeHandle runtimeTypeHandle)
+        {
+            if (TryLookupFunctionPointerTypeForComponents(returnTypeHandle, parameterHandles, isUnmanaged, out runtimeTypeHandle))
+                return true;
+
+            using (_typeLoaderLock.EnterScope())
+            {
+                return TypeBuilder.TryBuildFunctionPointerType(returnTypeHandle, parameterHandles, isUnmanaged, out runtimeTypeHandle);
+            }
+        }
+
+        public bool TryLookupFunctionPointerTypeForComponents(RuntimeTypeHandle returnTypeHandle, RuntimeTypeHandle[] parameterHandles, bool isUnmanaged, out RuntimeTypeHandle runtimeTypeHandle)
+        {
+            var key = new TypeSystemContext.FunctionPointerTypeKey(returnTypeHandle, parameterHandles, isUnmanaged);
+            if (TypeSystemContext.FunctionPointerTypesCache.TryGetValue(key, out runtimeTypeHandle))
+                return true;
+
+            if (!RuntimeAugments.IsDynamicType(returnTypeHandle)
+                && AllNonDynamicTypes(parameterHandles)
+                && TryGetStaticFunctionPointerTypeForComponents(returnTypeHandle, parameterHandles, isUnmanaged, out runtimeTypeHandle))
+            {
+                TypeSystemContext.FunctionPointerTypesCache.AddOrGetExisting(runtimeTypeHandle);
+                return true;
+            }
+
+            return false;
+
+            static bool AllNonDynamicTypes(RuntimeTypeHandle[] handles)
+            {
+                foreach (RuntimeTypeHandle h in handles)
+                    if (RuntimeAugments.IsDynamicType(h))
+                        return false;
+                return true;
             }
         }
 
@@ -350,7 +358,7 @@ namespace Internal.Runtime.TypeLoader
                 return true;
             }
 
-            using (LockHolder.Hold(_typeLoaderLock))
+            using (_typeLoaderLock.EnterScope())
             {
                 if (isMdArray && (rank < MDArray.MinRank) && (rank > MDArray.MaxRank))
                 {
@@ -377,9 +385,8 @@ namespace Internal.Runtime.TypeLoader
             if (TypeSystemContext.GetArrayTypesCache(isMdArray, rank).TryGetValue(elementTypeHandle, out arrayTypeHandle))
                 return true;
 
-            if (!isMdArray &&
-                !RuntimeAugments.IsDynamicType(elementTypeHandle) &&
-                TryGetArrayTypeForNonDynamicElementType(elementTypeHandle, out arrayTypeHandle))
+            if (!RuntimeAugments.IsDynamicType(elementTypeHandle) &&
+                TryGetArrayTypeForNonDynamicElementType(elementTypeHandle, isMdArray, rank, out arrayTypeHandle))
             {
                 TypeSystemContext.GetArrayTypesCache(isMdArray, rank).AddOrGetExisting(arrayTypeHandle);
                 return true;
@@ -390,34 +397,60 @@ namespace Internal.Runtime.TypeLoader
 
         public bool TryGetPointerTypeForTargetType(RuntimeTypeHandle pointeeTypeHandle, out RuntimeTypeHandle pointerTypeHandle)
         {
-            // There are no lookups for pointers in static modules. All pointer EETypes will be created at this level.
-            // It's possible to have multiple pointer EETypes representing the same pointer type with the same element type
-            // The caching of pointer types is done at the reflection layer (in the RuntimeTypeUnifier) and
-            // here in the TypeSystemContext layer
-
-            if (TypeSystemContext.PointerTypesCache.TryGetValue(pointeeTypeHandle, out pointerTypeHandle))
+            if (TryGetPointerTypeForTargetType_LookupOnly(pointeeTypeHandle, out pointerTypeHandle))
                 return true;
 
-            using (LockHolder.Hold(_typeLoaderLock))
+            using (_typeLoaderLock.EnterScope())
             {
+                if (TypeSystemContext.PointerTypesCache.TryGetValue(pointeeTypeHandle, out pointerTypeHandle))
+                    return true;
+
                 return TypeBuilder.TryBuildPointerType(pointeeTypeHandle, out pointerTypeHandle);
             }
         }
 
-        public bool TryGetByRefTypeForTargetType(RuntimeTypeHandle pointeeTypeHandle, out RuntimeTypeHandle byRefTypeHandle)
+        public static bool TryGetPointerTypeForTargetType_LookupOnly(RuntimeTypeHandle pointeeTypeHandle, out RuntimeTypeHandle pointerTypeHandle)
         {
-            // There are no lookups for ByRefs in static modules. All ByRef EETypes will be created at this level.
-            // It's possible to have multiple ByRef EETypes representing the same ByRef type with the same element type
-            // The caching of ByRef types is done at the reflection layer (in the RuntimeTypeUnifier) and
-            // here in the TypeSystemContext layer
-
-            if (TypeSystemContext.ByRefTypesCache.TryGetValue(pointeeTypeHandle, out byRefTypeHandle))
+            if (TypeSystemContext.PointerTypesCache.TryGetValue(pointeeTypeHandle, out pointerTypeHandle))
                 return true;
 
-            using (LockHolder.Hold(_typeLoaderLock))
+            if (!RuntimeAugments.IsDynamicType(pointeeTypeHandle) &&
+                TryGetPointerTypeForNonDynamicElementType(pointeeTypeHandle, out pointerTypeHandle))
             {
+                TypeSystemContext.PointerTypesCache.AddOrGetExisting(pointerTypeHandle);
+                return true;
+            }
+
+            return false;
+        }
+
+        public bool TryGetByRefTypeForTargetType(RuntimeTypeHandle pointeeTypeHandle, out RuntimeTypeHandle byRefTypeHandle)
+        {
+            if (TryGetByRefTypeForTargetType_LookupOnly(pointeeTypeHandle, out byRefTypeHandle))
+                return true;
+
+            using (_typeLoaderLock.EnterScope())
+            {
+                if (TypeSystemContext.ByRefTypesCache.TryGetValue(pointeeTypeHandle, out byRefTypeHandle))
+                    return true;
+
                 return TypeBuilder.TryBuildByRefType(pointeeTypeHandle, out byRefTypeHandle);
             }
+        }
+
+        public static bool TryGetByRefTypeForTargetType_LookupOnly(RuntimeTypeHandle pointeeTypeHandle, out RuntimeTypeHandle pointerTypeHandle)
+        {
+            if (TypeSystemContext.ByRefTypesCache.TryGetValue(pointeeTypeHandle, out pointerTypeHandle))
+                return true;
+
+            if (!RuntimeAugments.IsDynamicType(pointeeTypeHandle) &&
+                TryGetByRefTypeForNonDynamicElementType(pointeeTypeHandle, out pointerTypeHandle))
+            {
+                TypeSystemContext.ByRefTypesCache.AddOrGetExisting(pointerTypeHandle);
+                return true;
+            }
+
+            return false;
         }
 
         public int GetCanonicalHashCode(RuntimeTypeHandle typeHandle, CanonicalFormKind kind)
@@ -430,13 +463,13 @@ namespace Internal.Runtime.TypeLoader
             return hashCode;
         }
 
-        private object TryParseNativeSignatureWorker(TypeSystemContext typeSystemContext, TypeManagerHandle moduleHandle, ref NativeParser parser, RuntimeTypeHandle[] typeGenericArgumentHandles, RuntimeTypeHandle[] methodGenericArgumentHandles, bool isMethodSignature)
+        private static object TryParseNativeSignatureWorker(TypeSystemContext typeSystemContext, TypeManagerHandle moduleHandle, ref NativeParser parser, RuntimeTypeHandle[] typeGenericArgumentHandles, RuntimeTypeHandle[] methodGenericArgumentHandles, bool isMethodSignature)
         {
             Instantiation typeGenericArguments = typeSystemContext.ResolveRuntimeTypeHandles(typeGenericArgumentHandles ?? Array.Empty<RuntimeTypeHandle>());
             Instantiation methodGenericArguments = typeSystemContext.ResolveRuntimeTypeHandles(methodGenericArgumentHandles ?? Array.Empty<RuntimeTypeHandle>());
 
             NativeLayoutInfoLoadContext nativeLayoutContext = new NativeLayoutInfoLoadContext();
-            nativeLayoutContext._module = ModuleList.GetModuleInfoByHandle(moduleHandle);
+            nativeLayoutContext._module = ModuleList.Instance.GetModuleInfoByHandle(moduleHandle);
             nativeLayoutContext._typeSystemContext = typeSystemContext;
             nativeLayoutContext._typeArgumentHandles = typeGenericArguments;
             nativeLayoutContext._methodArgumentHandles = methodGenericArguments;
@@ -452,7 +485,7 @@ namespace Internal.Runtime.TypeLoader
             TypeSystemContext context = TypeSystemContextFactory.Create();
 
             DefType declaringType = (DefType)context.ResolveRuntimeTypeHandle(declaringTypeHandle);
-            InstantiatedMethod methodBeingLoaded = (InstantiatedMethod)context.ResolveGenericMethodInstantiation(false, declaringType, nameAndSignature, context.ResolveRuntimeTypeHandles(genericMethodArgHandles), IntPtr.Zero, false);
+            InstantiatedMethod methodBeingLoaded = (InstantiatedMethod)context.ResolveGenericMethodInstantiation(false, declaringType, nameAndSignature, context.ResolveRuntimeTypeHandles(genericMethodArgHandles));
 
             if (TryLookupGenericMethodDictionary(new MethodDescBasedGenericMethodLookup(methodBeingLoaded), out methodDictionary))
             {
@@ -460,7 +493,7 @@ namespace Internal.Runtime.TypeLoader
                 return true;
             }
 
-            using (LockHolder.Hold(_typeLoaderLock))
+            using (_typeLoaderLock.EnterScope())
             {
                 bool success = TypeBuilder.TryBuildGenericMethod(methodBeingLoaded, out methodDictionary);
 
@@ -498,21 +531,6 @@ namespace Internal.Runtime.TypeLoader
             return match;
         }
 
-        public bool ConversionToCanonFormIsAChange(RuntimeTypeHandle[] genericArgHandles, CanonicalFormKind kind)
-        {
-            // Todo: support for universal canon type?
-
-            TypeSystemContext context = TypeSystemContextFactory.Create();
-
-            Instantiation genericArgs = context.ResolveRuntimeTypeHandles(genericArgHandles);
-            bool result;
-            context.ConvertInstantiationToCanonForm(genericArgs, kind, out result);
-
-            TypeSystemContextFactory.Recycle(context);
-
-            return result;
-        }
-
         // get the generics hash table and external references table for a module
         // TODO multi-file: consider whether we want to cache this info
         private static unsafe bool GetHashtableFromBlob(NativeFormatModuleInfo module, ReflectionMapBlob blobId, out NativeHashtable hashtable, out ExternalReferencesTable externalReferencesLookup)
@@ -532,28 +550,6 @@ namespace Internal.Runtime.TypeLoader
             hashtable = new NativeHashtable(parser);
 
             return externalReferencesLookup.InitializeNativeReferences(module);
-        }
-
-        public static unsafe void GetFieldAlignmentAndSize(RuntimeTypeHandle fieldType, out int alignment, out int size)
-        {
-            MethodTable* typePtr = fieldType.ToEETypePtr();
-            if (typePtr->IsValueType)
-            {
-                size = (int)typePtr->ValueTypeSize;
-            }
-            else
-            {
-                size = IntPtr.Size;
-            }
-
-            alignment = (int)typePtr->FieldAlignmentRequirement;
-        }
-
-        [StructLayout(LayoutKind.Sequential)]
-        private struct UnboxingAndInstantiatingStubMapEntry
-        {
-            public uint StubMethodRva;
-            public uint MethodRva;
         }
 
         public static unsafe bool TryGetTargetOfUnboxingAndInstantiatingStub(IntPtr maybeInstantiatingAndUnboxingStub, out IntPtr targetMethod)

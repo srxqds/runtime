@@ -13,6 +13,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Collections.Generic;
+using Xunit;
 
 namespace Tracing.Tests.EnableDisableValidation
 {
@@ -55,7 +56,8 @@ namespace Tracing.Tests.EnableDisableValidation
 
     public class EnableDisableValidation
     {
-        public static int Main()
+        [Fact]
+        public static int TestEntryPoint()
         {
             // There is a potential deadlock because EventPipeEventSource uses ConcurrentDictionary, which
             // triggers loading the CDSCollectionETWBCLProvider EventSource, and registering the provider
@@ -72,6 +74,10 @@ namespace Tracing.Tests.EnableDisableValidation
             };
 
             DiagnosticsClient client = new DiagnosticsClient(Process.GetCurrentProcess().Id);
+#if DIAGNOSTICS_RUNTIME
+            if (OperatingSystem.IsAndroid())
+                client = new DiagnosticsClient(new IpcEndpointConfig("127.0.0.1:9000", IpcEndpointConfig.TransportType.TcpSocket, IpcEndpointConfig.PortType.Listen));
+#endif
             using (EventPipeSession session1 = client.StartEventPipeSession(providers))
             {
                 EventPipeEventSource source1 = new EventPipeEventSource(session1.EventStream);

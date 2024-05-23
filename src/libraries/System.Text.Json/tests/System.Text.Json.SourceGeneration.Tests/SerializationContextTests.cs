@@ -35,7 +35,7 @@ namespace System.Text.Json.SourceGeneration.Tests
     [JsonSerializable(typeof(JsonElement))]
     [JsonSerializable(typeof(RealWorldContextTests.ClassWithEnumAndNullable))]
     [JsonSerializable(typeof(RealWorldContextTests.ClassWithNullableProperties))]
-#if NETCOREAPP
+#if NET
     [JsonSerializable(typeof(RealWorldContextTests.ClassWithDateOnlyAndTimeOnlyValues))]
 #endif
     [JsonSerializable(typeof(ClassWithCustomConverter))]
@@ -46,12 +46,16 @@ namespace System.Text.Json.SourceGeneration.Tests
     [JsonSerializable(typeof(StructWithCustomConverterProperty))]
     [JsonSerializable(typeof(ClassWithCustomConverterFactoryProperty))]
     [JsonSerializable(typeof(StructWithCustomConverterFactoryProperty))]
+    [JsonSerializable(typeof(ClassWithCustomConverterNullableProperty))]
+    [JsonSerializable(typeof(ClassWithCustomConverterFactoryNullableProperty))]
     [JsonSerializable(typeof(ClassWithBadCustomConverter))]
     [JsonSerializable(typeof(StructWithBadCustomConverter))]
     [JsonSerializable(typeof(PersonStruct?))]
     [JsonSerializable(typeof(TypeWithValidationAttributes))]
     [JsonSerializable(typeof(TypeWithDerivedAttribute))]
     [JsonSerializable(typeof(PolymorphicClass))]
+    [JsonSerializable(typeof(PocoWithNumberHandlingAttr))]
+    [JsonSerializable(typeof(PocoWithMixedVisibilityMembers))]
     internal partial class SerializationContext : JsonSerializerContext, ITestContext
     {
         public JsonSourceGenerationMode JsonSourceGenerationMode => JsonSourceGenerationMode.Serialization;
@@ -84,7 +88,7 @@ namespace System.Text.Json.SourceGeneration.Tests
     [JsonSerializable(typeof(JsonElement), GenerationMode = JsonSourceGenerationMode.Serialization)]
     [JsonSerializable(typeof(RealWorldContextTests.ClassWithEnumAndNullable), GenerationMode = JsonSourceGenerationMode.Serialization)]
     [JsonSerializable(typeof(RealWorldContextTests.ClassWithNullableProperties), GenerationMode = JsonSourceGenerationMode.Serialization)]
-#if NETCOREAPP
+#if NET
     [JsonSerializable(typeof(RealWorldContextTests.ClassWithDateOnlyAndTimeOnlyValues), GenerationMode = JsonSourceGenerationMode.Serialization)]
 #endif
     [JsonSerializable(typeof(ClassWithCustomConverter), GenerationMode = JsonSourceGenerationMode.Serialization)]
@@ -93,14 +97,20 @@ namespace System.Text.Json.SourceGeneration.Tests
     [JsonSerializable(typeof(StructWithCustomConverterFactory), GenerationMode = JsonSourceGenerationMode.Serialization)]
     [JsonSerializable(typeof(ClassWithCustomConverterProperty), GenerationMode = JsonSourceGenerationMode.Serialization)]
     [JsonSerializable(typeof(StructWithCustomConverterProperty), GenerationMode = JsonSourceGenerationMode.Serialization)]
+    [JsonSerializable(typeof(ClassWithCustomConverterProperty), GenerationMode = JsonSourceGenerationMode.Serialization)]
+    [JsonSerializable(typeof(StructWithCustomConverterProperty), GenerationMode = JsonSourceGenerationMode.Serialization)]
     [JsonSerializable(typeof(ClassWithCustomConverterFactoryProperty), GenerationMode = JsonSourceGenerationMode.Serialization)]
     [JsonSerializable(typeof(StructWithCustomConverterFactoryProperty), GenerationMode = JsonSourceGenerationMode.Serialization)]
+    [JsonSerializable(typeof(ClassWithCustomConverterNullableProperty), GenerationMode = JsonSourceGenerationMode.Serialization)]
+    [JsonSerializable(typeof(ClassWithCustomConverterFactoryNullableProperty), GenerationMode = JsonSourceGenerationMode.Serialization)]
     [JsonSerializable(typeof(ClassWithBadCustomConverter), GenerationMode = JsonSourceGenerationMode.Serialization)]
     [JsonSerializable(typeof(StructWithBadCustomConverter), GenerationMode = JsonSourceGenerationMode.Serialization)]
     [JsonSerializable(typeof(PersonStruct?), GenerationMode = JsonSourceGenerationMode.Serialization)]
     [JsonSerializable(typeof(TypeWithValidationAttributes), GenerationMode = JsonSourceGenerationMode.Serialization)]
     [JsonSerializable(typeof(TypeWithDerivedAttribute), GenerationMode = JsonSourceGenerationMode.Serialization)]
     [JsonSerializable(typeof(PolymorphicClass), GenerationMode = JsonSourceGenerationMode.Serialization)]
+    [JsonSerializable(typeof(PocoWithNumberHandlingAttr), GenerationMode = JsonSourceGenerationMode.Serialization)]
+    [JsonSerializable(typeof(PocoWithMixedVisibilityMembers), GenerationMode = JsonSourceGenerationMode.Serialization)]
     internal partial class SerializationWithPerTypeAttributeContext : JsonSerializerContext, ITestContext
     {
         public JsonSourceGenerationMode JsonSourceGenerationMode => JsonSourceGenerationMode.Serialization;
@@ -134,7 +144,7 @@ namespace System.Text.Json.SourceGeneration.Tests
     [JsonSerializable(typeof(JsonElement), GenerationMode = JsonSourceGenerationMode.Serialization)]
     [JsonSerializable(typeof(RealWorldContextTests.ClassWithEnumAndNullable), GenerationMode = JsonSourceGenerationMode.Serialization)]
     [JsonSerializable(typeof(RealWorldContextTests.ClassWithNullableProperties), GenerationMode = JsonSourceGenerationMode.Serialization)]
-#if NETCOREAPP
+#if NET
     [JsonSerializable(typeof(RealWorldContextTests.ClassWithDateOnlyAndTimeOnlyValues), GenerationMode = JsonSourceGenerationMode.Serialization)]
 #endif
     [JsonSerializable(typeof(ClassWithCustomConverter), GenerationMode = JsonSourceGenerationMode.Serialization)]
@@ -145,12 +155,16 @@ namespace System.Text.Json.SourceGeneration.Tests
     [JsonSerializable(typeof(StructWithCustomConverterProperty), GenerationMode = JsonSourceGenerationMode.Serialization)]
     [JsonSerializable(typeof(ClassWithCustomConverterFactoryProperty), GenerationMode = JsonSourceGenerationMode.Serialization)]
     [JsonSerializable(typeof(StructWithCustomConverterFactoryProperty), GenerationMode = JsonSourceGenerationMode.Serialization)]
+    [JsonSerializable(typeof(ClassWithCustomConverterNullableProperty), GenerationMode = JsonSourceGenerationMode.Serialization)]
+    [JsonSerializable(typeof(ClassWithCustomConverterFactoryNullableProperty), GenerationMode = JsonSourceGenerationMode.Serialization)]
     [JsonSerializable(typeof(ClassWithBadCustomConverter), GenerationMode = JsonSourceGenerationMode.Serialization)]
     [JsonSerializable(typeof(StructWithBadCustomConverter), GenerationMode = JsonSourceGenerationMode.Serialization)]
     [JsonSerializable(typeof(PersonStruct?), GenerationMode = JsonSourceGenerationMode.Serialization)]
     [JsonSerializable(typeof(TypeWithValidationAttributes), GenerationMode = JsonSourceGenerationMode.Serialization)]
     [JsonSerializable(typeof(TypeWithDerivedAttribute), GenerationMode = JsonSourceGenerationMode.Serialization)]
     [JsonSerializable(typeof(PolymorphicClass), GenerationMode = JsonSourceGenerationMode.Serialization)]
+    [JsonSerializable(typeof(PocoWithNumberHandlingAttr), GenerationMode = JsonSourceGenerationMode.Serialization)]
+    [JsonSerializable(typeof(PocoWithMixedVisibilityMembers), GenerationMode = JsonSourceGenerationMode.Serialization)]
     internal partial class SerializationContextWithCamelCase : JsonSerializerContext, ITestContext
     {
         public JsonSourceGenerationMode JsonSourceGenerationMode => JsonSourceGenerationMode.Serialization;
@@ -468,7 +482,7 @@ namespace System.Text.Json.SourceGeneration.Tests
             }
         }
 
-#if NETCOREAPP
+#if NET
         [Fact]
         public override void ClassWithDateOnlyAndTimeOnlyValues_Roundtrip()
         {
@@ -568,7 +582,7 @@ namespace System.Text.Json.SourceGeneration.Tests
             Assert.NotNull(SerializationWithPerTypeAttributeContext.Default.MyNestedNestedClass.SerializeHandler);
             Assert.Null(SerializationWithPerTypeAttributeContext.Default.ObjectArray.SerializeHandler);
             Assert.Null(SerializationWithPerTypeAttributeContext.Default.ByteArray.SerializeHandler);
-            Assert.Null(SerializationWithPerTypeAttributeContext.Default.SampleEnum.SerializeHandler);
+            Assert.Null(SerializationWithPerTypeAttributeContext.Default.SourceGenSampleEnum.SerializeHandler);
             Assert.Null(SerializationWithPerTypeAttributeContext.Default.String.SerializeHandler);
             Assert.NotNull(SerializationWithPerTypeAttributeContext.Default.ValueTupleStringInt32Boolean.SerializeHandler);
             Assert.Null(SerializationWithPerTypeAttributeContext.Default.JsonDocument.SerializeHandler);

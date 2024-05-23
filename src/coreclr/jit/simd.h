@@ -4,9 +4,21 @@
 #ifndef _SIMD_H_
 #define _SIMD_H_
 
+template <typename T>
+static bool ElementsAreSame(T* array, size_t size)
+{
+    for (size_t i = 1; i < size; i++)
+    {
+        if (array[0] != array[i])
+            return false;
+    }
+    return true;
+}
+
 struct simd8_t
 {
-    union {
+    union
+    {
         float    f32[2];
         double   f64[1];
         int8_t   i8[8];
@@ -53,10 +65,13 @@ struct simd8_t
         return {};
     }
 };
+static_assert_no_msg(sizeof(simd8_t) == 8);
 
+#include <pshpack4.h>
 struct simd12_t
 {
-    union {
+    union
+    {
         float    f32[3];
         int8_t   i8[12];
         int16_t  i16[6];
@@ -109,10 +124,13 @@ struct simd12_t
         return {};
     }
 };
+#include <poppack.h>
+static_assert_no_msg(sizeof(simd12_t) == 12);
 
 struct simd16_t
 {
-    union {
+    union
+    {
         float    f32[4];
         double   f64[2];
         int8_t   i8[16];
@@ -161,11 +179,13 @@ struct simd16_t
         return {};
     }
 };
+static_assert_no_msg(sizeof(simd16_t) == 16);
 
 #if defined(TARGET_XARCH)
 struct simd32_t
 {
-    union {
+    union
+    {
         float    f32[8];
         double   f64[4];
         int8_t   i8[32];
@@ -215,10 +235,12 @@ struct simd32_t
         return {};
     }
 };
+static_assert_no_msg(sizeof(simd32_t) == 32);
 
 struct simd64_t
 {
-    union {
+    union
+    {
         float    f32[16];
         double   f64[8];
         int8_t   i8[64];
@@ -269,6 +291,57 @@ struct simd64_t
         return {};
     }
 };
+static_assert_no_msg(sizeof(simd64_t) == 64);
+
+struct simdmask_t
+{
+    union
+    {
+        int8_t   i8[8];
+        int16_t  i16[4];
+        int32_t  i32[2];
+        int64_t  i64[1];
+        uint8_t  u8[8];
+        uint16_t u16[4];
+        uint32_t u32[2];
+        uint64_t u64[1];
+    };
+
+    bool operator==(const simdmask_t& other) const
+    {
+        return (u64[0] == other.u64[0]);
+    }
+
+    bool operator!=(const simdmask_t& other) const
+    {
+        return !(*this == other);
+    }
+
+    static simdmask_t AllBitsSet()
+    {
+        simdmask_t result;
+
+        result.u64[0] = 0xFFFFFFFFFFFFFFFF;
+
+        return result;
+    }
+
+    bool IsAllBitsSet() const
+    {
+        return *this == AllBitsSet();
+    }
+
+    bool IsZero() const
+    {
+        return *this == Zero();
+    }
+
+    static simdmask_t Zero()
+    {
+        return {};
+    }
+};
+static_assert_no_msg(sizeof(simdmask_t) == 8);
 
 typedef simd64_t simd_t;
 #else
@@ -283,6 +356,22 @@ TBase EvaluateUnaryScalarSpecialized(genTreeOps oper, TBase arg0)
         case GT_NOT:
         {
             return ~arg0;
+        }
+
+        case GT_LZCNT:
+        {
+            if (sizeof(TBase) == sizeof(uint32_t))
+            {
+                uint32_t result = BitOperations::LeadingZeroCount(static_cast<uint32_t>(arg0));
+                return static_cast<TBase>(result);
+            }
+            else if (sizeof(TBase) == sizeof(uint64_t))
+            {
+                uint64_t result = BitOperations::LeadingZeroCount(static_cast<uint64_t>(arg0));
+                return static_cast<TBase>(result);
+            }
+
+            unreached();
         }
 
         default:
@@ -430,7 +519,23 @@ void EvaluateUnarySimd(genTreeOps oper, bool scalar, var_types baseType, TSimd* 
 template <typename TBase>
 TBase EvaluateBinaryScalarRSZ(TBase arg0, TBase arg1)
 {
-    return arg0 >> (arg1 & ((sizeof(TBase) * 8) - 1));
+#if defined(TARGET_XARCH)
+    if ((arg1 < 0) || (arg1 >= (sizeof(TBase) * 8)))
+    {
+        // For SIMD, xarch allows overshifting and treats
+        // it as zeroing. So ensure we do the same here.
+        //
+        // The xplat APIs ensure the shiftAmount is masked
+        // to be within range, so we can't hit this for them.
+
+        return static_cast<TBase>(0);
+    }
+#else
+    // Other platforms enforce masking in their encoding
+    assert((arg1 >= 0) && (arg1 < (sizeof(TBase) * 8)));
+#endif
+
+    return arg0 >> arg1;
 }
 
 template <>
@@ -490,7 +595,22 @@ TBase EvaluateBinaryScalarSpecialized(genTreeOps oper, TBase arg0, TBase arg1)
 
         case GT_LSH:
         {
-            return arg0 << (arg1 & ((sizeof(TBase) * 8) - 1));
+#if defined(TARGET_XARCH)
+            if ((arg1 < 0) || (arg1 >= (sizeof(TBase) * 8)))
+            {
+                // For SIMD, xarch allows overshifting and treats
+                // it as zeroing. So ensure we do the same here.
+                //
+                // The xplat APIs ensure the shiftAmount is masked
+                // to be within range, so we can't hit this for them.
+
+                return static_cast<TBase>(0);
+            }
+#else
+            // Other platforms enforce masking in their encoding
+            assert((arg1 >= 0) && (arg1 < (sizeof(TBase) * 8)));
+#endif
+            return arg0 << arg1;
         }
 
         case GT_OR:
@@ -498,9 +618,38 @@ TBase EvaluateBinaryScalarSpecialized(genTreeOps oper, TBase arg0, TBase arg1)
             return arg0 | arg1;
         }
 
+        case GT_ROL:
+        {
+            return EvaluateBinaryScalarSpecialized<TBase>(GT_LSH, arg0, arg1) |
+                   EvaluateBinaryScalarRSZ<TBase>(arg0, (sizeof(TBase) * 8) - arg1);
+        }
+
+        case GT_ROR:
+        {
+            return EvaluateBinaryScalarRSZ<TBase>(arg0, arg1) |
+                   EvaluateBinaryScalarSpecialized<TBase>(GT_LSH, arg0, (sizeof(TBase) * 8) - arg1);
+        }
+
         case GT_RSH:
         {
-            return arg0 >> (arg1 & ((sizeof(TBase) * 8) - 1));
+#if defined(TARGET_XARCH)
+            if ((arg1 < 0) || (arg1 >= (sizeof(TBase) * 8)))
+            {
+                // For SIMD, xarch allows overshifting and treats
+                // it as propagating the sign bit (returning Zero
+                // or AllBitsSet). So ensure we do the same here.
+                //
+                // The xplat APIs ensure the shiftAmount is masked
+                // to be within range, so we can't hit this for them.
+
+                arg0 >>= ((sizeof(TBase) * 8) - 1);
+                arg1 = static_cast<TBase>(1);
+            }
+#else
+            // Other platforms enforce masking in their encoding
+            assert((arg1 >= 0) && (arg1 < (sizeof(TBase) * 8)));
+#endif
+            return arg0 >> arg1;
         }
 
         case GT_RSZ:

@@ -10,7 +10,7 @@
 #include "sstring.h"
 #include "ex.h"
 #include "holder.h"
-
+#include <minipal/strings.h>
 
 #if defined(_MSC_VER)
 #pragma inline_depth (25)
@@ -87,7 +87,7 @@ static WCHAR MapChar(WCHAR wc, DWORD dwFlags)
 #ifdef SELF_NO_HOST
             toupper(wc);
 #else
-            PAL_ToUpperInvariant(wc);
+            minipal_toupper_invariant(wc);
 #endif
     }
     else
@@ -97,7 +97,7 @@ static WCHAR MapChar(WCHAR wc, DWORD dwFlags)
 #ifdef SELF_NO_HOST
             tolower(wc);
 #else
-            PAL_ToLowerInvariant(wc);
+            minipal_tolower_invariant(wc);
 #endif
     }
 #endif // !TARGET_UNIX
@@ -244,7 +244,7 @@ void SString::Set(const WCHAR *string)
         Clear();
     else
     {
-        Resize((COUNT_T) wcslen(string), REPRESENTATION_UNICODE);
+        Resize((COUNT_T) u16_strlen(string), REPRESENTATION_UNICODE);
         wcscpy_s(GetRawUnicode(), GetBufferSizeInCharIncludeNullChar(), string);
     }
 
@@ -985,7 +985,7 @@ BOOL SString::Find(CIterator &i, const SString &s) const
             const WCHAR *end = GetUnicode() + GetRawCount() - count;
             while (start <= end)
             {
-                if (wcsncmp(start, source.GetRawUnicode(), count) == 0)
+                if (u16_strncmp(start, source.GetRawUnicode(), count) == 0)
                 {
                     i.Resync(this, (BYTE*) start);
                     RETURN TRUE;
@@ -1124,7 +1124,7 @@ BOOL SString::FindBack(CIterator &i, const SString &s) const
 
             while (start >= end)
             {
-                if (wcsncmp(start, source.GetRawUnicode(), count) == 0)
+                if (u16_strncmp(start, source.GetRawUnicode(), count) == 0)
                 {
                     i.Resync(this, (BYTE*) start);
                     RETURN TRUE;
@@ -1334,7 +1334,7 @@ int SString::Compare(const SString &s) const
     switch (GetRepresentation())
     {
     case REPRESENTATION_UNICODE:
-        result = wcsncmp(GetRawUnicode(), source.GetRawUnicode(), smaller);
+        result = u16_strncmp(GetRawUnicode(), source.GetRawUnicode(), smaller);
         break;
 
     case REPRESENTATION_ASCII:
@@ -1448,7 +1448,7 @@ BOOL SString::Equals(const SString &s) const
     switch (GetRepresentation())
     {
     case REPRESENTATION_UNICODE:
-        RETURN (wcsncmp(GetRawUnicode(), source.GetRawUnicode(), count) == 0);
+        RETURN (u16_strncmp(GetRawUnicode(), source.GetRawUnicode(), count) == 0);
 
     case REPRESENTATION_ASCII:
         RETURN (strncmp(GetRawASCII(), source.GetRawASCII(), count) == 0);
@@ -1536,7 +1536,7 @@ BOOL SString::Match(const CIterator &i, const SString &s) const
     switch (GetRepresentation())
     {
     case REPRESENTATION_UNICODE:
-        RETURN (wcsncmp(i.GetUnicode(), source.GetRawUnicode(), count) == 0);
+        RETURN (u16_strncmp(i.GetUnicode(), source.GetRawUnicode(), count) == 0);
 
     case REPRESENTATION_ASCII:
         RETURN (strncmp(i.GetASCII(), source.GetRawASCII(), count) == 0);

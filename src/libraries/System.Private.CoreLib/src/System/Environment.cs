@@ -3,7 +3,6 @@
 
 using System.Collections;
 using System.Diagnostics;
-using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Threading;
 
@@ -85,6 +84,19 @@ namespace System
             bool fromMachine = ValidateAndConvertRegistryTarget(target);
             SetEnvironmentVariableFromRegistry(variable, value, fromMachine: fromMachine);
         }
+
+#if !MONO
+        internal static string[]? s_commandLineArgs;
+
+        public static string[] GetCommandLineArgs()
+        {
+            // s_commandLineArgs is expected to be initialize with application command line arguments
+            // during startup. GetCommandLineArgsNative fallback is used for hosted libraries.
+            return s_commandLineArgs != null ?
+                (string[])s_commandLineArgs.Clone() :
+                GetCommandLineArgsNative();
+        }
+#endif
 
         public static string CommandLine => PasteArguments.Paste(GetCommandLineArgs(), pasteFirstArgumentUsingArgV0Rules: true);
 
@@ -188,28 +200,10 @@ namespace System
             }
         }
 
-        public static Version Version
-        {
-            get
-            {
-                string? versionString = typeof(object).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
-
-                ReadOnlySpan<char> versionSpan = versionString.AsSpan();
-
-                // Strip optional suffixes
-                int separatorIndex = versionSpan.IndexOfAny('-', '+', ' ');
-                if (separatorIndex >= 0)
-                    versionSpan = versionSpan.Slice(0, separatorIndex);
-
-                // Return zeros rather then failing if the version string fails to parse
-                return Version.TryParse(versionSpan, out Version? version) ? version : new Version();
-            }
-        }
-
         public static string StackTrace
         {
             [MethodImpl(MethodImplOptions.NoInlining)] // Prevent inlining from affecting where the stacktrace starts
-            get => new StackTrace(true).ToString(System.Diagnostics.StackTrace.TraceFormat.Normal);
+            get => new StackTrace(true).ToString(Diagnostics.StackTrace.TraceFormat.Normal);
         }
 
         private static volatile int s_systemPageSize;

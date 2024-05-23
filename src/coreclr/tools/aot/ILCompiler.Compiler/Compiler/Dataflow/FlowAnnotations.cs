@@ -253,7 +253,7 @@ namespace ILLink.Shared.TrimAnalysis
 
         public static bool IsTypeInterestingForDataflow(TypeDesc type)
         {
-            // NOTE: this method is not particulary fast. It's assumed that the caller limits
+            // NOTE: this method is not particularly fast. It's assumed that the caller limits
             // calls to this method as much as possible.
 
             if (type.IsWellKnownType(WellKnownType.String))
@@ -455,8 +455,6 @@ namespace ILLink.Shared.TrimAnalysis
                                 continue;
                             }
 
-                            // We convert indices from metadata space to IL space here.
-                            // IL space assigns index 0 to the `this` parameter on instance methods.
                             paramAnnotations ??= new DynamicallyAccessedMemberTypes[method.GetParametersCount()];
                             paramAnnotations[parameter.SequenceNumber - 1 + (signature.IsStatic ? 0 : 1)] = pa;
                         }
@@ -643,7 +641,7 @@ namespace ILLink.Shared.TrimAnalysis
 
             private IReadOnlyList<GenericParameterDesc?>? GetGeneratedTypeAttributes(EcmaType typeDef)
             {
-                if (!CompilerGeneratedNames.IsGeneratedType(typeDef.Name))
+                if (!CompilerGeneratedNames.IsStateMachineOrDisplayClass(typeDef.Name))
                 {
                     return null;
                 }
@@ -953,12 +951,12 @@ namespace ILLink.Shared.TrimAnalysis
             => RequiresDataflowAnalysisDueToSignature(method.Method);
 
 #pragma warning disable CA1822 // Other partial implementations are not in the ilc project
-        internal partial MethodReturnValue GetMethodReturnValue(MethodProxy method, DynamicallyAccessedMemberTypes dynamicallyAccessedMemberTypes)
+        internal partial MethodReturnValue GetMethodReturnValue(MethodProxy method, bool isNewObj, DynamicallyAccessedMemberTypes dynamicallyAccessedMemberTypes)
 #pragma warning restore CA1822 // Mark members as static
-            => new MethodReturnValue(method.Method, dynamicallyAccessedMemberTypes);
+            => new MethodReturnValue(method.Method, isNewObj, dynamicallyAccessedMemberTypes);
 
-        internal partial MethodReturnValue GetMethodReturnValue(MethodProxy method)
-            => GetMethodReturnValue(method, GetReturnParameterAnnotation(method.Method));
+        internal partial MethodReturnValue GetMethodReturnValue(MethodProxy method, bool isNewObj)
+            => GetMethodReturnValue(method, isNewObj, GetReturnParameterAnnotation(method.Method));
 
         internal partial GenericParameterValue GetGenericParameterValue(GenericParameterProxy genericParameter)
             => new GenericParameterValue(genericParameter.GenericParameter, GetGenericParameterAnnotation(genericParameter.GenericParameter));
@@ -1024,6 +1022,10 @@ namespace ILLink.Shared.TrimAnalysis
                 }
                 // All values except for Nullable<T>, including Nullable<> (with no type arguments)
                 return new SystemTypeValue(genericArgumentType);
+            }
+            else if (genericArgument is ArrayType arrayType)
+            {
+                return new SystemTypeValue(arrayType);
             }
             else
             {
